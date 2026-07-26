@@ -1,0 +1,42 @@
+driver_versions:
+  - "610.43.03"
+  - "610.43.02"
+
+gpu:
+  vendor_id: "10de"
+  device_ids:
+    - "20c2"
+    - "2082"
+    - "20b0"
+    - "220d"
+
+compute:
+  ss0: "0x88888888"
+  ss1: "0x00000008"
+
+profiles:
+  "8gb":
+    stock_mib: 8192
+    unlocked_mib: 65536
+    cfg1: "0x02779000"
+    lmr: "0x0000020B"
+    fb_bytes: "0x0000001000000000"
+    comment: "8GB physical card → 64GB geometry"
+  "10gb":
+    stock_mib: 10240
+    unlocked_mib: 40960
+    cfg1: "0x02669000"
+    lmr: "0x0000028A"
+    fb_bytes: "0x0000000A00000000"
+    comment: "10GB physical card → 40GB geometry"
+  "cmp90":
+    stock_mib: 10240
+    unlocked_mib: 10240
+    cfg1: "0x00000000"
+    lmr: "0x00000000"
+    fb_bytes: "0x0000000280000000"
+    pci_id: "0x20b0"
+    compute_unlock: true
+    ss0: "0x88888888"
+    ss1: "0x00000008"
+    comment: "CMP 90 (GA102) — compute unlock, memory not expandable (GDDR6X)"
