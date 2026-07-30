@@ -142,11 +142,24 @@ cd /home/it/cmpunlocker-master && ./install.sh --profile=cmp90
 | `/tmp/nvidia-580.run` | 580.105.08 driver installer |
 | `/tmp/nv580_extract/` | Extracted 580.x driver |
 
+## VBIOS Cross-Flash Experiment
+
+See [docs/VBIOS_EXPERIMENT.md](docs/VBIOS_EXPERIMENT.md) — RTX 3080 VBIOS flashed, Device ID substitution works, GSP hangs at memory training.
+
+## Rhonstin's Critical Findings (2026-07-29)
+
+Forked at [Rhonstin/cmp90hx-unlock](https://github.com/Rhonstin/cmp90hx-unlock). Key results:
+
+- ❌ ROP via BooterLoad/ucode09/GSP: all DEAD (0 indirect calls, no copy loops, PLM hardcoded)
+- ✅ NEW VECTOR: meta_knob — driver hooks for WPR meta swap before FWSEC
+- ✅ NEW VECTOR: other ucodes (not 0x09) — may have indirect calls
+- ✅ Correct mailbox: PGSP (0x110040)
+
 ## Next Steps
 
-1. **Wait for Jon Pry's response** — gadget addresses or emulator help
-2. **Adapt d3dx9 emulator for 610.x** — parse flat `.fwimage`, find booter sections
-3. **Try 580.x driver build** — port 580.x kernel-open to 6.12 (similar to 610.x port)
+1. Analyze other Falcon ucodes for exploitable characteristics
+2. Collaborate with Rhonstin — merge tools + hardware test capability
+3. Frankenstein VBIOS — transplant CMP memory timings into RTX 3080 VBIOS
 
 ## Log Files
 
