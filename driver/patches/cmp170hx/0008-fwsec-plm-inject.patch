@@ -1,0 +1,217 @@
+--- src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_falcon_ga102.c	2026-07-07 21:23:15.000000000 +0500
++++ b/src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_falcon_ga102.c	2026-08-02 16:31:10.630672289 +0500
+@@ -233,6 +233,39 @@
+         RmPhysAddr srcPhysAddr = memdescGetPhysAddr(pUcode->pUcodeMemDesc, AT_GPU, 0);
+         srcPhysAddr = srcPhysAddr + pUcode->codeOffset - pUcode->imemVa;
+ 
++        // CMP90HX meta_knob: inject JAL at 0xE19C in host buffer,
++        // reduce imemSize so BootROM validates only 0x000-0xE19B.
++        // DMA block alignment (256B) loads JAL anyway — unvalidated.
++        if (pUcode->imemVa == 0 && pUcode->imemSize == 0xE200)
++        {
++            NvU8 *pBuf = memdescMapInternal(pGpu, pUcode->pUcodeMemDesc, 0);
++            if (pBuf != NULL)
++            {
++                NvU32 *pWords = (NvU32 *)(pBuf + pUcode->codeOffset
++                                          - pUcode->imemVa);
++                // Dump first 16 words of ucode09 for offline analysis
++                NV_PRINTF(LEVEL_ERROR,
++                    "CMP90HX: ucode09 dump: "
++                    "%08x %08x %08x %08x %08x %08x %08x %08x\n",
++                    pWords[0], pWords[1], pWords[2], pWords[3],
++                    pWords[4], pWords[5], pWords[6], pWords[7]);
++                NV_PRINTF(LEVEL_ERROR,
++                    "CMP90HX: ucode09 dump: "
++                    "%08x %08x %08x %08x %08x %08x %08x %08x\n",
++                    pWords[8], pWords[9], pWords[10], pWords[11],
++                    pWords[12], pWords[13], pWords[14], pWords[15]);
++
++                // Write JAL at exit point (DISABLED — breaks signature)
++                // pWords[0xE19C / 4] = 0x6650106F;
++                memdescFlushCpuCaches(pGpu, pUcode->pUcodeMemDesc);
++                memdescUnmapInternal(pGpu, pUcode->pUcodeMemDesc, 0);
++                // pUcode->imemSize = 0xE19C; // DISABLED
++                NV_PRINTF(LEVEL_ERROR,
++                    "CMP90HX: ucode09 dump complete (imemSize=0x%x)\n",
++                    pUcode->imemSize);
++            }
++        }
++
+         NV_ASSERT_OK_OR_RETURN(
+             s_dmaTransfer_GA102(pGpu, pKernelFlcn,
+                                 pUcode->imemPa,    // dest
+@@ -283,11 +316,170 @@
+     if (pMailbox1 != NULL)
+         kflcnRegWrite_HAL(pGpu, pKernelFlcn, NV_PFALCON_FALCON_MAILBOX1, *pMailbox1);
+ 
+-    // Start CPU now.
+-    kflcnStartCpu_HAL(pGpu, pKernelFlcn);
++    // CMP90HX: Payload at IMEM[0x10000] (SECURE=0). ucode09 dump for Ghidra.
++    if (pUcode->imemVa == 0 && pUcode->imemSize == 0xE200)
++    {
++        NvU32 i, reg32, val;
++        NvU32 payload_addr = 0x10000;
++        NvU32 exit_addr   = 0xE19C;
++        NvU32 jal_insn    = 0x6650106F; // JAL x0, 0x10000 (offset=0x1E64)
++        NvU32 marker;
++
++        NvU32 plm_payload[] = {
++            0x008242B7, 0x80428293, 0xFFFFF337, 0xFFF30313,
++            0x7C833073, 0x7CC29073, 0x00000393, 0x7F038393,
++            0x0063A023, 0x10500073
++        };
++
++        // Verify IMEM reads work (read ucode09 header)
++        reg32 = kflcnMaskImemAddr_HAL(pGpu, pKernelFlcn, 0x000);
++        kflcnRegWrite_HAL(pGpu, pKernelFlcn, NV_PFALCON_FALCON_IMEMC(0), reg32);
++        val = kflcnRegRead_HAL(pGpu, pKernelFlcn, NV_PFALCON_FALCON_IMEMD(0));
++        NV_PRINTF(LEVEL_ERROR,
++            "CMP90HX: IMEM[0x000]=0x%08x\n", val);
++        reg32 = kflcnMaskImemAddr_HAL(pGpu, pKernelFlcn, 0x004);
++        kflcnRegWrite_HAL(pGpu, pKernelFlcn, NV_PFALCON_FALCON_IMEMC(0), reg32);
++        val = kflcnRegRead_HAL(pGpu, pKernelFlcn, NV_PFALCON_FALCON_IMEMD(0));
++        NV_PRINTF(LEVEL_ERROR,
++            "CMP90HX: IMEM[0x004]=0x%08x\n", val);
++
++        // Write payload to non-secure IMEM[0x10000] (AINCW=1, SECURE=0)
++        reg32 = kflcnMaskImemAddr_HAL(pGpu, pKernelFlcn, payload_addr);
++        reg32 = FLD_SET_DRF_NUM(_PFALCON_FALCON, _IMEMC, _AINCW, 0x1, reg32);
++        kflcnRegWrite_HAL(pGpu, pKernelFlcn, NV_PFALCON_FALCON_IMEMC(0), reg32);
++        for (i = 0; i < 10; i++)
++            kflcnRegWrite_HAL(pGpu, pKernelFlcn,
++                NV_PFALCON_FALCON_IMEMD(0), plm_payload[i]);
++
++        // Verify payload
++        reg32 = kflcnMaskImemAddr_HAL(pGpu, pKernelFlcn, payload_addr);
++        kflcnRegWrite_HAL(pGpu, pKernelFlcn, NV_PFALCON_FALCON_IMEMC(0), reg32);
++        marker = kflcnRegRead_HAL(pGpu, pKernelFlcn, NV_PFALCON_FALCON_IMEMD(0));
++        NV_PRINTF(LEVEL_ERROR,
++            "CMP90HX: pre-start IMEM[0x10000]=0x%08x (expect 0x008242B7) %s\n",
++            marker, (marker == 0x008242B7) ? "OK" : "FAIL!");
++
++        // Pre-fill DMEM marker
++
++        // Full DMEM dump: read 1024 words (4KB) into buffer, print 8/line
++        {
++            NvU32 dmem_buf[1024];
++            NvU32 di;
++            NV_PRINTF(LEVEL_ERROR,
++                "CMP90HX: === FULL DMEM DUMP (0x0000-0x0FFF) ===\n");
++            for (di = 0; di < 1024; di++)
++            {
++                reg32 = kflcnMaskDmemAddr_HAL(pGpu, pKernelFlcn, di * 4);
++                kflcnRegWrite_HAL(pGpu, pKernelFlcn,
++                    NV_PFALCON_FALCON_DMEMC(0), reg32);
++                dmem_buf[di] = kflcnRegRead_HAL(pGpu, pKernelFlcn,
++                    NV_PFALCON_FALCON_DMEMD(0));
++            }
++            for (di = 0; di < 1024; di += 8)
++            {
++                NV_PRINTF(LEVEL_ERROR,
++                    "D[%04x]: %08x %08x %08x %08x %08x %08x %08x %08x\n",
++                    di * 4,
++                    dmem_buf[di],   dmem_buf[di+1], dmem_buf[di+2],
++                    dmem_buf[di+3], dmem_buf[di+4], dmem_buf[di+5],
++                    dmem_buf[di+6], dmem_buf[di+7]);
++            }
++            NV_PRINTF(LEVEL_ERROR,
++                "CMP90HX: === END DMEM DUMP ===\n");
++        }
++
++        // Pre-fill DMEM marker
++        reg32 = kflcnMaskDmemAddr_HAL(pGpu, pKernelFlcn, 0x7F0);
++        kflcnRegWrite_HAL(pGpu, pKernelFlcn, NV_PFALCON_FALCON_DMEMC(0), reg32);
++        kflcnRegWrite_HAL(pGpu, pKernelFlcn, NV_PFALCON_FALCON_DMEMD(0), 0xCAFEBABE);
++        reg32 = kflcnMaskDmemAddr_HAL(pGpu, pKernelFlcn, 0x7F0);
++        kflcnRegWrite_HAL(pGpu, pKernelFlcn, NV_PFALCON_FALCON_DMEMC(0), reg32);
++        marker = kflcnRegRead_HAL(pGpu, pKernelFlcn, NV_PFALCON_FALCON_DMEMD(0));
++        NV_PRINTF(LEVEL_ERROR,
++            "CMP90HX: pre-start DMEM[0x7F0]=0x%08x (wrote 0xCAFEBABE) %s\n",
++            marker, (marker == 0xCAFEBABE) ? "OK" : "FAIL!");
+ 
+-    // Wait for completion.
+-    status = kflcnWaitForHalt_HAL(pGpu, pKernelFlcn, GPU_TIMEOUT_DEFAULT, 0);
++        // Start Falcon — FWSEC checks SHA-256 integrity ONCE here
++        kflcnStartCpu_HAL(pGpu, pKernelFlcn);
++
++        // TOCTOU ATTACK: Runtime DMEM Spoof after SHA-256 check passed.
++        // Spam device ID (RTX 3090) + MMIO table (FEAT unlock) while FWSEC runs.
++        {
++            NvU32 spam_count;
++            for (spam_count = 0; spam_count < 300000; spam_count++)
++            {
++                // Spoof Device ID to RTX 3090 (0x2204)
++                reg32 = kflcnMaskDmemAddr_HAL(pGpu, pKernelFlcn, 0x0008);
++                kflcnRegWrite_HAL(pGpu, pKernelFlcn,
++                    NV_PFALCON_FALCON_DMEMC(0), reg32);
++                kflcnRegWrite_HAL(pGpu, pKernelFlcn,
++                    NV_PFALCON_FALCON_DMEMD(0), 0x22040003);
++
++                // Patch MMIO table: FEAT addr + unlock value (AINCW=1)
++                reg32 = kflcnMaskDmemAddr_HAL(pGpu, pKernelFlcn, 0x07E0);
++                reg32 = FLD_SET_DRF_NUM(_PFALCON, _FALCON_DMEMC, _AINCW,
++                    0x1, reg32);
++                kflcnRegWrite_HAL(pGpu, pKernelFlcn,
++                    NV_PFALCON_FALCON_DMEMC(0), reg32);
++                kflcnRegWrite_HAL(pGpu, pKernelFlcn,
++                    NV_PFALCON_FALCON_DMEMD(0), 0x00823804);
++                kflcnRegWrite_HAL(pGpu, pKernelFlcn,
++                    NV_PFALCON_FALCON_DMEMD(0), 0xFFFFFFFF);
++            }
++        }
++
++        // Post-spam readback: verify our writes reached DMEM
++        reg32 = kflcnMaskDmemAddr_HAL(pGpu, pKernelFlcn, 0x0008);
++        kflcnRegWrite_HAL(pGpu, pKernelFlcn, NV_PFALCON_FALCON_DMEMC(0), reg32);
++        val = kflcnRegRead_HAL(pGpu, pKernelFlcn, NV_PFALCON_FALCON_DMEMD(0));
++        NV_PRINTF(LEVEL_ERROR,
++            "CMP90HX: post-spam DMEM[0x0008]=0x%08x (wrote 0x22040003)\n", val);
++        reg32 = kflcnMaskDmemAddr_HAL(pGpu, pKernelFlcn, 0x07E0);
++        kflcnRegWrite_HAL(pGpu, pKernelFlcn, NV_PFALCON_FALCON_DMEMC(0), reg32);
++        val = kflcnRegRead_HAL(pGpu, pKernelFlcn, NV_PFALCON_FALCON_DMEMD(0));
++        NV_PRINTF(LEVEL_ERROR,
++            "CMP90HX: post-spam DMEM[0x07E0]=0x%08x (wrote 0x00823804)\n", val);
++
++        // Wait for halt
++        status = kflcnWaitForHalt_HAL(pGpu, pKernelFlcn,
++                                      GPU_TIMEOUT_DEFAULT, 0);
++
++        // Diagnostics
++        reg32 = kflcnMaskImemAddr_HAL(pGpu, pKernelFlcn, payload_addr);
++        kflcnRegWrite_HAL(pGpu, pKernelFlcn, NV_PFALCON_FALCON_IMEMC(0), reg32);
++        marker = kflcnRegRead_HAL(pGpu, pKernelFlcn, NV_PFALCON_FALCON_IMEMD(0));
++        NV_PRINTF(LEVEL_ERROR,
++            "CMP90HX: post-halt IMEM[0x10000]=0x%08x\n", marker);
++
++        reg32 = kflcnMaskImemAddr_HAL(pGpu, pKernelFlcn, exit_addr);
++        reg32 = FLD_SET_DRF_NUM(_PFALCON_FALCON, _IMEMC, _SECURE, 0x1, reg32);
++        kflcnRegWrite_HAL(pGpu, pKernelFlcn, NV_PFALCON_FALCON_IMEMC(0), reg32);
++        marker = kflcnRegRead_HAL(pGpu, pKernelFlcn, NV_PFALCON_FALCON_IMEMD(0));
++        NV_PRINTF(LEVEL_ERROR,
++            "CMP90HX: post-halt IMEM[0xE19C]=0x%08x (JAL=0x%08x)\n",
++            marker, jal_insn);
++
++        reg32 = kflcnMaskDmemAddr_HAL(pGpu, pKernelFlcn, 0x7F0);
++        kflcnRegWrite_HAL(pGpu, pKernelFlcn, NV_PFALCON_FALCON_DMEMC(0), reg32);
++        marker = kflcnRegRead_HAL(pGpu, pKernelFlcn, NV_PFALCON_FALCON_DMEMD(0));
++        NV_PRINTF(LEVEL_ERROR,
++            "CMP90HX: post-halt DMEM[0x7F0]=0x%08x (0xFFFFFFFF iff payload ran)\n",
++            marker);
++
++        val = GPU_REG_RD32(pGpu, 0x00823804);
++        NV_PRINTF(LEVEL_ERROR,
++            "CMP90HX: post-FWSEC FEAT=0x%08x %s\n",
++            val, (val == 0xFFFFFFFF) ? "UNLOCKED!" : "");
++    }
++    else
++    {
++        // Start CPU now.
++        kflcnStartCpu_HAL(pGpu, pKernelFlcn);
++
++        // Wait for completion.
++        status = kflcnWaitForHalt_HAL(pGpu, pKernelFlcn,
++                                      GPU_TIMEOUT_DEFAULT, 0);
++    }
+ 
+     // Read mailboxes if requested.
+     if (pMailbox0 != NULL)

@@ -486,15 +486,6 @@ else:
         sed -i 's|#if defined(NV_MODULE_IMPORT_NS_TAKES_CONSTANT)|#if 1 /* force constant */|' "${NV_C}"
     fi
 
-    # kernel_gsp.c: neutralize CMP90 exploit if dmem.bin is missing (safe mode)
-    # Change _kgspCmp90Enabled to return false → GPU boots stock, no exploit
-    local GSP_C="${SRC_DIR}/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c"
-    if [[ ! -f /lib/firmware/nvidia/ga102/gsp/dmem.bin ]] && [[ -f "${GSP_C}" ]]; then
-        warn "dmem.bin not found — CMP90 exploit neutralized (safe mode)"
-        warn "GPU will boot stock. To enable exploit, provide dmem.bin and rebuild."
-        sed -i 's|return (devId == CMP90_PCI_DEVICE_ID)|return NV_FALSE /* safe mode: dmem.bin missing */|' "${GSP_C}"
-    fi
-
     # Add Falcon mailbox dump at GSP boot for debugging
     if [[ -f "${GSP_C}" ]]; then
         python3 -c "

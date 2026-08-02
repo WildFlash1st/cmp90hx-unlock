@@ -6,7 +6,7 @@ index b771a00..15a33a2 100644
          goto failed_release_irq;
      }
  
-+    if (nv->pci_info.device_id == 0x20B0)
++    if (nv->pci_info.device_id == 0x220D)
 +    {
 +        nv->flags |= NV_FLAG_PERSISTENT_SW_STATE;
 +    }
@@ -38,7 +38,7 @@ index 443f6f4..2a7a09f 100644
 +
 +        {
 +            NvU32 devId = pGpu->idInfo.PCIDeviceID >> 16;
-+            if (devId == 0x20B0 &&
++            if (devId == 0x220D &&
 +                pMemoryManager->Ram.fbAddrSpaceSizeMb > 0x2000)
 +            {
 +                NvU64 stockOffset = (0x2000ULL << 20) - DRF_SIZE(NV_PRAMIN);
@@ -99,14 +99,14 @@ index 0ee595f..1a630f5 100644
 +
 +    {
 +        NvU32 devId = pGpu->idInfo.PCIDeviceID >> 16;
-+        if (devId == 0x20B0)
++        if (devId == 0x220D)
 +            NV_PRINTF(LEVEL_ERROR,
 +                      "CMP90_DEBUG: normal BooterLoad status=0x%x\n", status);
 +    }
 +
 +    {
 +        NvU32 devId = pGpu->idInfo.PCIDeviceID >> 16;
-+        if (devId == 0x20B0 && status == NV_OK)
++        if (devId == 0x220D && status == NV_OK)
 +        {
 +            NV_PRINTF(LEVEL_ERROR,
 +                      "CMP90_DEBUG: POST-BooterLoad verify PLM=0x%08x SS0=0x%08x SS1=0x%08x\n",
@@ -127,7 +127,7 @@ index 4da1151..98bc2b5 100644
  
  #include "crashcat/crashcat_report.h"
  
-+#define CMP90_PCI_DEVICE_ID                    0x20B0
++#define CMP90_PCI_DEVICE_ID                    0x220D
 +#define CMP90_SIGNATURE_SIZE                   0x0000f800ULL
 +#define CMP90_SIGNATURE_FILL_DWORD             0x000004a7U
 +#define CMP90_DMEM_PATH                        "/lib/firmware/nvidia/ga102/gsp/dmem.bin"
@@ -529,7 +529,7 @@ index 3b53128..d0dda27 100644
          return;
  
 +    pGpu = ENG_GET_GPU(pMemoryManager);
-+    if (pGpu != NULL && (pGpu->idInfo.PCIDeviceID >> 16) == 0x20B0)
++    if (pGpu != NULL && (pGpu->idInfo.PCIDeviceID >> 16) == 0x220D)
 +    {
 +        *pteKind = NV_MMU_PTE_KIND_GENERIC_MEMORY;
 +        return;
@@ -548,7 +548,7 @@ index 75c6159..e35446b 100644
          IS_SILICON(pGpu) && !pMemorySystemConfig->bDisableCompbitBacking &&
 -        (pMemorySystemConfig->bUseRawModeComptaglineAllocation || pMemorySystemConfig->bOneToOneComptagLineAllocation))
 +        (pMemorySystemConfig->bUseRawModeComptaglineAllocation || pMemorySystemConfig->bOneToOneComptagLineAllocation) &&
-+        (pGpu->idInfo.PCIDeviceID >> 16) != 0x20B0)
++        (pGpu->idInfo.PCIDeviceID >> 16) != 0x220D)
      {
          // Turn on virtual mode to enable compressed allocation access
          ceUtilsParams.flags |= DRF_DEF(0050_CEUTILS, _FLAGS, _VIRTUAL_MODE, _TRUE);
@@ -562,7 +562,7 @@ index 23528a2..5dbb175 100644
  
 -        if (memmgrUseVasForCeMemoryOps(pMemoryManager))
 +        if (memmgrUseVasForCeMemoryOps(pMemoryManager) &&
-+            (pGpu->idInfo.PCIDeviceID >> 16) != 0x20B0)
++            (pGpu->idInfo.PCIDeviceID >> 16) != 0x220D)
          {
              ceUtilsAllocParams.flags = DRF_DEF(0050, _CEUTILS_FLAGS, _VIRTUAL_MODE, _TRUE);
          }
