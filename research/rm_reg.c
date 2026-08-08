@@ -91,12 +91,17 @@ static int alloc_object(int fd, NvHandle hRoot, NvHandle parent, NvV32 cls,
 int main(int argc, char **argv) {
     if (argc < 3) {
         printf("Usage: %s read <offset_hex>\n", argv[0]);
-        printf("       %s write <offset_hex> <value_hex>\n", argv[0]);
+        printf("       %s write <offset_hex> <value_hex> [mask_hex]\n", argv[0]);
         return 1;
     }
     int bWrite = (strcmp(argv[1], "write") == 0);
     NvU32 offset = (NvU32)strtoul(argv[2], NULL, 16);
     NvU32 wval = bWrite ? (NvU32)strtoul(argv[3], NULL, 16) : 0;
+    NvU32 mask = bWrite ? 0xFFFFFFFF : 0;
+    if (bWrite && argc > 4) mask = (NvU32)strtoul(argv[4], NULL, 16);
+    // regType: 0=GLOBAL, 1=GR_CTX, 2=GR_CTX_TPC, 4=GR_CTX_SM
+    NvU8 regType = NV2080_CTRL_GPU_REG_OP_TYPE_GLOBAL;
+    if (argc > (bWrite ? 5 : 3)) regType = (NvU8)strtoul(argv[bWrite ? 5 : 3], NULL, 16);
 
     int fd = open("/dev/nvidiactl", O_RDWR);
     int fd_dev = open("/dev/nvidia0", O_RDWR);
@@ -121,9 +126,10 @@ int main(int argc, char **argv) {
     NV2080_CTRL_GPU_REG_OP op;
     memset(&op, 0, sizeof(op));
     op.regOp = bWrite ? NV2080_CTRL_GPU_REG_OP_WRITE_32 : NV2080_CTRL_GPU_REG_OP_READ_32;
-    op.regType = NV2080_CTRL_GPU_REG_OP_TYPE_GLOBAL;
+    op.regType = regType;
     op.regOffset = offset;
     op.regValueLo = wval;
+    op.regAndNMaskLo = bWrite ? mask : 0;
 
     NV2080_CTRL_GPU_EXEC_REG_OPS_PARAMS p;
     memset(&p, 0, sizeof(p));
