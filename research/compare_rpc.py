@@ -50,17 +50,17 @@ def main():
     cmp_cnt = Counter(cmp_cmds)
     rtx_cnt = Counter(rtx_cmds)
 
-    print("=== ТОЛЬКО В RTX 3080 (нет в CMP) ===")
+    print("=== RTX 3080 ONLY (not in CMP) ===")
     for (cmd, ln), c in sorted((rtx_cnt - cmp_cnt).items()):
         name = CMD_NAMES.get(cmd, f"0x{cmd:X}")
         print(f"  {name:30s} (0x{cmd:X}) len={ln}: {c}x")
 
-    print("\n=== ТОЛЬКО В CMP (нет в RTX) ===")
+    print("\n=== CMP ONLY (not in RTX) ===")
     for (cmd, ln), c in sorted((cmp_cnt - rtx_cnt).items()):
         name = CMD_NAMES.get(cmd, f"0x{cmd:X}")
         print(f"  {name:30s} (0x{cmd:X}) len={ln}: {c}x")
 
-    print(f"\nRTX: {len(rtx_cmds)} команд, CMP: {len(cmp_cmds)} команд")
+    print(f"\nRTX: {len(rtx_cmds)} commands, CMP: {len(cmp_cmds)} commands")
 
 if __name__ == '__main__':
     main()

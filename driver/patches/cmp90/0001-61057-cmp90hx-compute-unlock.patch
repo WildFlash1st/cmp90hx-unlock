@@ -1,0 +1,407 @@
+From: bendy2 (ported to 610.x)
+Subject: CMP 90HX compute unlock via V67 PLM exploit
+
+Port of bendy2's CMP 90HX compute unlock patch from 580.x to 610.57.04.
+Uses V67 (Booter Load) to open FEAT_OVR_PLM, then writes the speed selectors
+SS0=0x88888888 SS1=0x00000008 to unlock full compute performance.
+
+Gadget addresses updated for 610.x GSP firmware:
+- 0x00000d44 -> 0x00000d2a (LW x18,-384(x13))
+- 0x00001fce -> 0x0000209c (AUIPC)
+- 0x00000d52 -> 0x00000d38 (offset)
+
+---
+diff --git a/src/nvidia/generated/g_kernel_gsp_nvoc.h b/src/nvidia/generated/g_kernel_gsp_nvoc.h
+index 86af3dd..4c7f045 100644
+--- a/src/nvidia/generated/g_kernel_gsp_nvoc.h
++++ b/src/nvidia/generated/g_kernel_gsp_nvoc.h
+@@ -544,6 +544,8 @@ struct KernelGsp {
+     RM_RISCV_UCODE_DESC *pGspRmBootUcodeDesc;
+     MEMORY_DESCRIPTOR *pGspUCodeRadix3Descriptor;
+     MEMORY_DESCRIPTOR *pSignatureMemdesc;
++    NvU8 *pCmp90StockSignatureData;
++    NvU64 cmp90StockSignatureSize;
+     GspSystemInfo *pSystemInfo;
+     NvU32 regTableSize;
+     PACKED_REGISTRY_TABLE *pRegTable;
+diff --git a/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c b/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
+index 0ee595f..c47fcc9 100644
+--- a/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
++++ b/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
+@@ -57,6 +57,10 @@
+ #include "g_all_dcl_pb.h"
+ #include "lib/protobuf/prb.h"
+ 
++NV_STATUS kgspCmp90hxApplyComputeOverrides(OBJGPU *pGpu,
++                                            KernelGsp *pKernelGsp,
++                                            NvU64 booterLoadArgs);
++
+ void
+ kgspConfigureFalcon_TU102
+ (
+@@ -527,6 +531,7 @@ kgspBootstrap_TU102
+ )
+ {
+     NV_STATUS status;
++    NvU64 booterLoadArgs;
+     KernelFalcon *pKernelFalcon = staticCast(pKernelGsp, KernelFalcon);
+ 
+     // Execute Scrubber if needed
+@@ -562,9 +567,24 @@ kgspBootstrap_TU102
+         kgspProgramLibosBootArgsAddr_HAL(pGpu, pKernelGsp);
+     }
+ 
++    booterLoadArgs = _kgspGetBooterLoadArgs(pKernelGsp, bootMode);
++
++    /*
++     * CMP90HX needs the V67 operation at this exact point: FWSEC, RISC-V
++     * reset and LibOS boot arguments are already prepared, but the normal
++     * Booter Load has not yet consumed the restored production signature.
++     */
++    if (bootMode == KGSP_BOOT_MODE_NORMAL)
++    {
++        status = kgspCmp90hxApplyComputeOverrides(pGpu, pKernelGsp,
++                                                   booterLoadArgs);
++        if (status != NV_OK)
++            return status;
++    }
++
+     // Execute Booter Load
+     status = kgspExecuteBooterLoad_HAL(pGpu, pKernelGsp,
+-                                       _kgspGetBooterLoadArgs(pKernelGsp, bootMode));
++                                       booterLoadArgs);
+     if (status != NV_OK)
+     {
+         NV_PRINTF(LEVEL_ERROR, "failed to execute Booter Load (ucode for initial boot): 0x%x\n", status);
+diff --git a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c b/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
+index 4da1151..8efbdbb 100644
+--- a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
++++ b/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
+@@ -102,6 +102,29 @@
+ 
+ #include "crashcat/crashcat_report.h"
+ 
++#define CMP90HX_PCI_DEVICE_ID                  0x220DU
++#define CMP90HX_PCI_SUBDEVICE_ID               0x155510DEU
++#define CMP90HX_SIGNATURE_SIZE                 0x0000FA00ULL
++#define CMP90HX_SIGNATURE_FILL_DWORD           0x0000019CU
++#define CMP90HX_FEAT_OVR_PLM                   0x00823804U
++#define CMP90HX_FEAT_OVR_SM_SPD                0x0082381CU
++#define CMP90HX_FEAT_OVR_SM_SPD_1              0x00823820U
++
++static NvBool
++_kgspCmp90hxEnabled(OBJGPU *pGpu)
++{
++    return (((pGpu->idInfo.PCIDeviceID >> 16) == CMP90HX_PCI_DEVICE_ID) &&
++            (pGpu->idInfo.PCISubDeviceID == CMP90HX_PCI_SUBDEVICE_ID));
++}
++
++static NV_STATUS _kgspCmp90hxRefillOpenPlmPayload(OBJGPU *pGpu,
++    KernelGsp *pKernelGsp);
++static NV_STATUS _kgspCmp90hxRestoreStockSignature(OBJGPU *pGpu,
++    KernelGsp *pKernelGsp);
++
++NV_STATUS kgspCmp90hxApplyComputeOverrides(OBJGPU *pGpu,
++    KernelGsp *pKernelGsp, NvU64 booterLoadArgs);
++
+ 
+ struct MIG_CI_UPDATE_CALLBACK_PARAMS
+ {
+@@ -5662,6 +5685,226 @@ _kgspFreeBootBinaryImage
+     pKernelGsp->gspRmBootUcodeSize   = 0;
+ }
+ 
++static void
++_kgspCmp90hxPutU32
++(
++    NvU8 *pBuffer,
++    NvU32 offset,
++    NvU32 value
++)
++{
++    pBuffer[offset + 0] = (NvU8)(value >> 0);
++    pBuffer[offset + 1] = (NvU8)(value >> 8);
++    pBuffer[offset + 2] = (NvU8)(value >> 16);
++    pBuffer[offset + 3] = (NvU8)(value >> 24);
++}
++
++static void
++_kgspCmp90hxFillOpenPlmPayload
++(
++    NvU8 *pSignatureVa,
++    NvU64 signatureSize
++)
++{
++    NvU64 i;
++
++    for (i = 0; i + sizeof(NvU32) <= signatureSize; i += sizeof(NvU32))
++        _kgspCmp90hxPutU32(pSignatureVa, (NvU32)i,
++            CMP90HX_SIGNATURE_FILL_DWORD);
++
++    /* 610.x gadget addresses - verified via objdump */
++    _kgspCmp90hxPutU32(pSignatureVa, 0x1100, 0x00000007U);
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf948, 0xffffffffU);
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf950, 0x00000d2aU);  /* was 0x00000d44 in 580.x */
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf960, CMP90HX_FEAT_OVR_PLM);
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf968, 0x0000209cU);  /* was 0x00001fce in 580.x */
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf974, 0x00000000U);
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf97c, 0x00001101U);
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf980, 0x000084c8U);
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf984, 0x00008e18U);
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf98c, 0x000084c8U);
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf990, 0x00000000U);
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf998, 0x0000209cU);  /* was 0x00001fce in 580.x */
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf9a4, 0x0000ffbcU);
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf9ac, 0x00005789U);
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf9bc, 0x00000d2aU);  /* was 0x00000d44 in 580.x */
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf9cc, 0x00000003U);
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf9d4, 0x0000209cU);  /* was 0x00001fce in 580.x */
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf9e8, 0x00000d38U);  /* was 0x00000d52 in 580.x */
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf9ec, 0x000081eeU);
++}
++
++static NV_STATUS
++_kgspCmp90hxRefillOpenPlmPayload
++(
++    OBJGPU *pGpu,
++    KernelGsp *pKernelGsp
++)
++{
++    NvU8 *pSignatureVa;
++
++    if (pKernelGsp->pSignatureMemdesc == NULL)
++        return NV_ERR_INVALID_STATE;
++
++    pSignatureVa = memdescMapInternal(pGpu, pKernelGsp->pSignatureMemdesc,
++        TRANSFER_FLAGS_NONE);
++    if (pSignatureVa == NULL)
++        return NV_ERR_INSUFFICIENT_RESOURCES;
++
++    _kgspCmp90hxFillOpenPlmPayload(pSignatureVa,
++        memdescGetSize(pKernelGsp->pSignatureMemdesc));
++    memdescUnmapInternal(pGpu, pKernelGsp->pSignatureMemdesc, 0);
++    memdescFlushCpuCaches(pGpu, pKernelGsp->pSignatureMemdesc);
++
++    if (pKernelGsp->pWprMeta != NULL)
++    {
++        pKernelGsp->pWprMeta->sysmemAddrOfSignature =
++            memdescGetPhysAddr(pKernelGsp->pSignatureMemdesc, AT_GPU, 0);
++        pKernelGsp->pWprMeta->sizeOfSignature =
++            memdescGetSize(pKernelGsp->pSignatureMemdesc);
++    }
++    if (pKernelGsp->pWprMetaDescriptor != NULL)
++        memdescFlushCpuCaches(pGpu, pKernelGsp->pWprMetaDescriptor);
++
++    return NV_OK;
++}
++
++static NV_STATUS
++_kgspCmp90hxRestoreStockSignature
++(
++    OBJGPU *pGpu,
++    KernelGsp *pKernelGsp
++)
++{
++    NV_STATUS status = NV_OK;
++    NvU8 *pSignatureVa = NULL;
++    NvU64 flags = MEMDESC_FLAGS_NONE;
++
++    if ((pKernelGsp->pCmp90StockSignatureData == NULL) ||
++        (pKernelGsp->cmp90StockSignatureSize == 0))
++        return NV_ERR_INVALID_STATE;
++
++    if (pKernelGsp->pSignatureMemdesc != NULL)
++    {
++        memdescFree(pKernelGsp->pSignatureMemdesc);
++        memdescDestroy(pKernelGsp->pSignatureMemdesc);
++        pKernelGsp->pSignatureMemdesc = NULL;
++    }
++
++    flags |= MEMDESC_FLAGS_ALLOC_IN_UNPROTECTED_MEMORY;
++    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
++        memdescCreate(&pKernelGsp->pSignatureMemdesc, pGpu,
++            NV_ALIGN_UP(pKernelGsp->cmp90StockSignatureSize, 256), 256,
++            NV_TRUE, ADDR_SYSMEM, NV_MEMORY_CACHED, flags));
++
++    memdescTagAlloc(status, NV_FB_ALLOC_RM_INTERNAL_OWNER_UNNAMED_TAG_16,
++        pKernelGsp->pSignatureMemdesc);
++    NV_CHECK_OK_OR_GOTO(status, LEVEL_ERROR, status, fail_create);
++
++    pSignatureVa = memdescMapInternal(pGpu, pKernelGsp->pSignatureMemdesc,
++        TRANSFER_FLAGS_NONE);
++    NV_CHECK_OK_OR_GOTO(status, LEVEL_ERROR,
++        (pSignatureVa != NULL) ? NV_OK : NV_ERR_INSUFFICIENT_RESOURCES,
++        fail_alloc);
++
++    portMemCopy(pSignatureVa, memdescGetSize(pKernelGsp->pSignatureMemdesc),
++        pKernelGsp->pCmp90StockSignatureData,
++        pKernelGsp->cmp90StockSignatureSize);
++    memdescUnmapInternal(pGpu, pKernelGsp->pSignatureMemdesc, 0);
++    memdescFlushCpuCaches(pGpu, pKernelGsp->pSignatureMemdesc);
++    portMemFree(pKernelGsp->pCmp90StockSignatureData);
++    pKernelGsp->pCmp90StockSignatureData = NULL;
++    pKernelGsp->cmp90StockSignatureSize = 0;
++
++    if (pKernelGsp->pWprMeta != NULL)
++    {
++        pKernelGsp->pWprMeta->sysmemAddrOfSignature =
++            memdescGetPhysAddr(pKernelGsp->pSignatureMemdesc, AT_GPU, 0);
++        pKernelGsp->pWprMeta->sizeOfSignature =
++            memdescGetSize(pKernelGsp->pSignatureMemdesc);
++    }
++    if (pKernelGsp->pWprMetaDescriptor != NULL)
++        memdescFlushCpuCaches(pGpu, pKernelGsp->pWprMetaDescriptor);
++
++    return NV_OK;
++
++fail_alloc:
++    memdescFree(pKernelGsp->pSignatureMemdesc);
++fail_create:
++    memdescDestroy(pKernelGsp->pSignatureMemdesc);
++    pKernelGsp->pSignatureMemdesc = NULL;
++    return status;
++}
++
++NV_STATUS
++kgspCmp90hxApplyComputeOverrides
++(
++    OBJGPU *pGpu,
++    KernelGsp *pKernelGsp,
++    NvU64 booterLoadArgs
++)
++{
++    NV_STATUS status;
++    NvU32 attempt;
++    NvU32 wpr2Lo;
++    NvU32 wpr2Hi;
++    NvU32 plm;
++    NvU32 ss0;
++    NvU32 ss1;
++
++    if (!_kgspCmp90hxEnabled(pGpu))
++        return NV_OK;
++
++    wpr2Lo = GPU_REG_RD32(pGpu, 0x001fa824U);
++    wpr2Hi = GPU_REG_RD32(pGpu, 0x001fa828U);
++    plm = 0;
++    for (attempt = 0; attempt < 2; attempt++)
++    {
++        GPU_REG_WR32(pGpu, 0x001fa824U, wpr2Lo);
++        GPU_REG_WR32(pGpu, 0x001fa828U, wpr2Hi);
++        NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
++            _kgspCmp90hxRefillOpenPlmPayload(pGpu, pKernelGsp));
++
++        /* This V67 invocation opens PLM but intentionally does not boot RM. */
++        status = kgspExecuteBooterLoad_HAL(pGpu, pKernelGsp, booterLoadArgs);
++        plm = GPU_REG_RD32(pGpu, CMP90HX_FEAT_OVR_PLM);
++        NV_PRINTF(LEVEL_ERROR,
++            "CMP90HX: V67 attempt=%u status=0x%x PLM=0x%08x\n",
++            attempt, status, plm);
++        if (plm == 0xffffffffU)
++            break;
++    }
++    GPU_REG_WR32(pGpu, 0x001fa824U, wpr2Lo);
++    GPU_REG_WR32(pGpu, 0x001fa828U, wpr2Hi);
++    if (plm != 0xffffffffU)
++    {
++        NV_PRINTF(LEVEL_ERROR,
++            "CMP90HX: FEAT_OVR_PLM did not open (0x%08x)\n", plm);
++        return NV_ERR_INVALID_STATE;
++    }
++
++    /* The verified compute-only selector order is SS1 first, then SS0. */
++    GPU_REG_WR32(pGpu, CMP90HX_FEAT_OVR_SM_SPD_1, 0x00000008U);
++    ss1 = GPU_REG_RD32(pGpu, CMP90HX_FEAT_OVR_SM_SPD_1);
++    GPU_REG_WR32(pGpu, CMP90HX_FEAT_OVR_SM_SPD, 0x88888888U);
++    ss0 = GPU_REG_RD32(pGpu, CMP90HX_FEAT_OVR_SM_SPD);
++    if ((ss0 != 0x88888888U) || (ss1 != 0x00000008U))
++    {
++        NV_PRINTF(LEVEL_ERROR,
++            "CMP90HX: selector readback failed SS0=0x%08x SS1=0x%08x\n",
++            ss0, ss1);
++        return NV_ERR_INVALID_STATE;
++    }
++
++    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
++        _kgspCmp90hxRestoreStockSignature(pGpu, pKernelGsp));
++    NV_PRINTF(LEVEL_ERROR,
++        "CMP90HX: compute selectors enabled PLM=0x%08x SS0=0x%08x SS1=0x%08x\n",
++        plm, ss0, ss1);
++    /* The bootstrap module intentionally stops here; systemd performs bus reset. */
++    return NV_ERR_INVALID_STATE;
++}
++
+ static NV_STATUS
+ _kgspCreateSignatureMemdesc
+ (
+@@ -5671,10 +5914,15 @@ _kgspCreateSignatureMemdesc
+ )
+ {
+     NV_STATUS status = NV_OK;
++    NvBool bCmp90hx = _kgspCmp90hxEnabled(pGpu);
++    NvU64 signatureSize = bCmp90hx ? CMP90HX_SIGNATURE_SIZE :
++        NV_ALIGN_UP(pGspFw->signatureSize, 256);
+     NvU8 *pSignatureVa = NULL;
+     NvU64 flags = MEMDESC_FLAGS_NONE;
+ 
+-    if (confComputeForceUnprotAlloc(pGpu))
++    if (bCmp90hx)
++        flags |= MEMDESC_FLAGS_ALLOC_IN_UNPROTECTED_MEMORY;
++    else if (confComputeForceUnprotAlloc(pGpu))
+     {
+         flags |= MEMDESC_FLAGS_ALLOC_IN_UNPROTECTED_MEMORY;
+     }
+@@ -5682,7 +5930,7 @@ _kgspCreateSignatureMemdesc
+     // NOTE: align to 256 because that's the alignment needed for Booter DMA
+     NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+         memdescCreate(&pKernelGsp->pSignatureMemdesc, pGpu,
+-            NV_ALIGN_UP(pGspFw->signatureSize, 256), 256,
++            signatureSize, 256,
+             NV_TRUE, ADDR_SYSMEM, NV_MEMORY_CACHED, flags));
+ 
+     memdescTagAlloc(status,
+@@ -5694,15 +5942,42 @@ _kgspCreateSignatureMemdesc
+         (pSignatureVa != NULL) ? NV_OK : NV_ERR_INSUFFICIENT_RESOURCES,
+         fail_alloc);
+ 
+-    portMemCopy(pSignatureVa, memdescGetSize(pKernelGsp->pSignatureMemdesc),
+-        pGspFw->pSignatureData, pGspFw->signatureSize);
++    if (bCmp90hx)
++    {
++        pKernelGsp->cmp90StockSignatureSize = pGspFw->signatureSize;
++        pKernelGsp->pCmp90StockSignatureData = portMemAllocNonPaged(
++            pGspFw->signatureSize);
++        NV_CHECK_OK_OR_GOTO(status, LEVEL_ERROR,
++            (pKernelGsp->pCmp90StockSignatureData != NULL) ? NV_OK :
++                NV_ERR_INSUFFICIENT_RESOURCES,
++            fail_mapped);
++        portMemCopy(pKernelGsp->pCmp90StockSignatureData,
++            pGspFw->signatureSize, pGspFw->pSignatureData,
++            pGspFw->signatureSize);
++        _kgspCmp90hxFillOpenPlmPayload(pSignatureVa, signatureSize);
++    }
++    else
++    {
++        portMemCopy(pSignatureVa, memdescGetSize(pKernelGsp->pSignatureMemdesc),
++            pGspFw->pSignatureData, pGspFw->signatureSize);
++    }
+ 
+     memdescUnmapInternal(pGpu, pKernelGsp->pSignatureMemdesc, 0);
+     pSignatureVa = NULL;
++    memdescFlushCpuCaches(pGpu, pKernelGsp->pSignatureMemdesc);
+ 
+     return status;
+ 
++fail_mapped:
++    memdescUnmapInternal(pGpu, pKernelGsp->pSignatureMemdesc, 0);
++    pSignatureVa = NULL;
+ fail_alloc:
++    if (pKernelGsp->pCmp90StockSignatureData != NULL)
++    {
++        portMemFree(pKernelGsp->pCmp90StockSignatureData);
++        pKernelGsp->pCmp90StockSignatureData = NULL;
++        pKernelGsp->cmp90StockSignatureSize = 0;
++    }
+     memdescFree(pKernelGsp->pSignatureMemdesc);
+ 
+ fail_create:
