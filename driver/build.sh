@@ -506,6 +506,12 @@ else:
 "
     fi
 
+    # CMP90HX: Inject RPC tracer into _kgspRpcSendMessage
+    if [[ -f "${SRC_DIR}/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c" ]]; then
+        python3 "${SCRIPT_DIR}/inject_rpc_tracer.py" \
+            "${SRC_DIR}/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c"
+    fi
+
     # ── 4. Conftest: fix critical false negatives AND false positives ──
     # The -Wno-implicit-function-declaration bug causes conftest to detect
     # functions as present when they don't exist. Fix both directions.

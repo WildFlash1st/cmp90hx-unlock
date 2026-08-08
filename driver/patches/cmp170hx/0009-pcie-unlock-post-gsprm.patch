@@ -1,0 +1,25 @@
+--- a/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
++++ b/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
+@@ -583,6 +583,22 @@
+             return status;
+         }
+     }
++
++    // CMP90HX: Attempt PCIe unlock after GSP-RM is fully initialized
++    {
++        NvU32 devId = pGpu->idInfo.PCIDeviceID >> 16;
++        if (devId == 0x220D)
++        {
++            NV_PRINTF(LEVEL_ERROR,
++                "CMP90HX: PCIe unlock after GSP-RM init...\n");
++            GPU_REG_WR32(pGpu, 0x00823810, 0x00000000);
++            GPU_REG_WR32(pGpu, 0x0008c000, 0x00000003);
++            NV_PRINTF(LEVEL_ERROR,
++                "CMP90HX: PCIe: FUSE_OVR=0x%08x LINK_CTRL=0x%08x\n",
++                GPU_REG_RD32(pGpu, 0x00823810),
++                GPU_REG_RD32(pGpu, 0x0008c000));
++        }
++    }
+ 
+     // Program FALCON_OS
+     RM_RISCV_UCODE_DESC *pRiscvDesc = pKernelGsp->pGspRmBootUcodeDesc;
