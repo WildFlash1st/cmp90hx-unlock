@@ -1,0 +1,82 @@
+From: CMP90HX Research Team
+Subject: [PATCH 2/2] CMP90HX: Define macros for gadget and DMEM addresses
+
+Replace hardcoded values in _kgspCmp90hxFillOpenPlmPayload with named
+macros for better readability and future portability across driver versions.
+
+Gadget addresses (610.x, verified byte-identical to 580.x instructions):
+  CMP90HX_GADGET_LOAD_ENTRY  0x0d2a  LW x18,-384(x13)
+  CMP90HX_GADGET_AUIPC       0x209c  AUIPC
+  CMP90HX_GADGET_OP32_OFFSET 0x0d38  offset
+
+DMEM data addresses (same for 580.x and 610.x):
+  CMP90HX_DMEM_1101, CMP90HX_DMEM_84C8, CMP90HX_DMEM_8E18,
+  CMP90HX_DMEM_FFBC, CMP90HX_DMEM_5789, CMP90HX_DMEM_81EE
+
+---
+ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c | 39 +++++++++++++++++-----
+ 1 file changed, 26 insertions(+), 13 deletions(-)
+
+diff --git a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c b/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
+index 8efbdbb..14d81b4 100644
+--- a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
++++ b/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
+@@ -5699,6 +5699,19 @@ _kgspCmp90hxPutU32
+     pBuffer[offset + 3] = (NvU8)(value >> 24);
+ }
+
++/* CMP90HX V67 ROP gadget addresses for 610.x (verified byte-identical to 580.x) */
++#define CMP90HX_GADGET_LOAD_ENTRY    0x00000d2aU  /* LW x18,-384(x13) */
++#define CMP90HX_GADGET_AUIPC         0x0000209cU  /* AUIPC */
++#define CMP90HX_GADGET_OP32_OFFSET   0x00000d38U  /* offset */
++
++/* DMEM data addresses (same for 580.x and 610.x) */
++#define CMP90HX_DMEM_1101            0x00001101U
++#define CMP90HX_DMEM_84C8            0x000084c8U
++#define CMP90HX_DMEM_8E18            0x00008e18U
++#define CMP90HX_DMEM_FFBC            0x0000ffbcU
++#define CMP90HX_DMEM_5789            0x00005789U
++#define CMP90HX_DMEM_81EE            0x000081eeU
++
+ static void
+ _kgspCmp90hxFillOpenPlmPayload
+ (
+@@ -5715,23 +5728,23 @@ _kgspCmp90hxFillOpenPlmPayload
+     /* 610.x gadget addresses - verified via objdump */
+     _kgspCmp90hxPutU32(pSignatureVa, 0x1100, 0x00000007U);
+     _kgspCmp90hxPutU32(pSignatureVa, 0xf948, 0xffffffffU);
+-    _kgspCmp90hxPutU32(pSignatureVa, 0xf950, 0x00000d2aU);  /* was 0x00000d44 in 580.x */
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf950, CMP90HX_GADGET_LOAD_ENTRY);
+     _kgspCmp90hxPutU32(pSignatureVa, 0xf960, CMP90HX_FEAT_OVR_PLM);
+-    _kgspCmp90hxPutU32(pSignatureVa, 0xf968, 0x0000209cU);  /* was 0x00001fce in 580.x */
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf968, CMP90HX_GADGET_AUIPC);
+     _kgspCmp90hxPutU32(pSignatureVa, 0xf974, 0x00000000U);
+-    _kgspCmp90hxPutU32(pSignatureVa, 0xf97c, 0x00001101U);
+-    _kgspCmp90hxPutU32(pSignatureVa, 0xf980, 0x000084c8U);
+-    _kgspCmp90hxPutU32(pSignatureVa, 0xf984, 0x00008e18U);
+-    _kgspCmp90hxPutU32(pSignatureVa, 0xf98c, 0x000084c8U);
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf97c, CMP90HX_DMEM_1101);
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf980, CMP90HX_DMEM_84C8);
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf984, CMP90HX_DMEM_8E18);
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf98c, CMP90HX_DMEM_84C8);
+     _kgspCmp90hxPutU32(pSignatureVa, 0xf990, 0x00000000U);
+-    _kgspCmp90hxPutU32(pSignatureVa, 0xf998, 0x0000209cU);  /* was 0x00001fce in 580.x */
+-    _kgspCmp90hxPutU32(pSignatureVa, 0xf9a4, 0x0000ffbcU);
+-    _kgspCmp90hxPutU32(pSignatureVa, 0xf9ac, 0x00005789U);
+-    _kgspCmp90hxPutU32(pSignatureVa, 0xf9bc, 0x00000d2aU);  /* was 0x00000d44 in 580.x */
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf998, CMP90HX_GADGET_AUIPC);
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf9a4, CMP90HX_DMEM_FFBC);
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf9ac, CMP90HX_DMEM_5789);
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf9bc, CMP90HX_GADGET_LOAD_ENTRY);
+     _kgspCmp90hxPutU32(pSignatureVa, 0xf9cc, 0x00000003U);
+-    _kgspCmp90hxPutU32(pSignatureVa, 0xf9d4, 0x0000209cU);  /* was 0x00001fce in 580.x */
+-    _kgspCmp90hxPutU32(pSignatureVa, 0xf9e8, 0x00000d38U);  /* was 0x00000d52 in 580.x */
+-    _kgspCmp90hxPutU32(pSignatureVa, 0xf9ec, 0x000081eeU);
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf9d4, CMP90HX_GADGET_AUIPC);
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf9e8, CMP90HX_GADGET_OP32_OFFSET);
++    _kgspCmp90hxPutU32(pSignatureVa, 0xf9ec, CMP90HX_DMEM_81EE);
+ }
+
+ static NV_STATUS
+--
+2.45.0

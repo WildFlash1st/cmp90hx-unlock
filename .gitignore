@@ -44,3 +44,6 @@ output/*.ko
 /nvidia-*.run
 *.rom
 /cmps
+# Firmware binaries (large, not needed in repo)
+/firmware/
+/bendy2/

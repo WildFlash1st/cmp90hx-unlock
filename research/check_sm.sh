@@ -1,8 +1,8 @@
 #!/bin/bash
-# Полный набор RM control проверок — запускать на CMP и RTX 3080
+# Full RM control checks - run on CMP and RTX 3080
 cd /home/it/cmpunlocker-research
 
-echo "===== SM ISSUE RATE (критично!) ====="
+echo "===== SM ISSUE RATE (critical!) ====="
 ./rm_cmd 20801230 00000000 00000000 00000000 00000000 00000000 00000000 00000000
 
 echo ""
@@ -22,5 +22,5 @@ echo "===== PHYS GPC MASK ====="
 ./rm_cmd 20801232 00000000 00000000 00000000
 
 echo ""
-echo "===== FP32 бенчмарк ====="
+echo "===== FP32 benchmark ====="
 ./fp32_tp 2>&1 | grep -E 'FP32|Efficiency'
