@@ -100,9 +100,47 @@ PCIE_FUSE:  0x002aaaaa → 0x00000000
 
 | Repo | Description |
 |------|-------------|
+| `bendy2/cmp90hx` | **The working V67 exploit** for stock 580.159.03 + persistent service (our current unlock stack) |
+| `loss-and-quick` (PR #2) | 610.x port, gadget analysis, tools, English translations |
+| `Rhonstin/llama-cpp-cmp90hx` | llama.cpp patches — CMP 90HX decode +66% |
 | `jonpry` (Zenodo) | Original paper "A Canary in the Crypto Mine" |
 | `d3dx9/cmpunlocker` | Python implementation — Falcon emulator + ROP chain |
-| `amoghmunikote/cmpunlocker` | Our fork — kernel module approach (610.x port) |
+| `amoghmunikote/cmpunlocker` | Upstream fork — kernel module approach (610.x port) |
+| `WildFlash1st/cmp90hx-unlock` | This repository — full research history (GSP audit, 25 driver iterations, issue-rate characterization, kernel 6.12 port) |
+
+## Credits
+
+- **bendy2** — V67 exploit + direct-compute patch for 580.159.03 (`github.com/bendy2/cmp90hx`), the key that finally opened PLM
+- **loss-and-quick** — 610.57.04 port, ROP gadget analysis, `lw_catalog_610.py` / `compare_op32.py` / `extract_ucode.py`, documentation and English translations (merged PR #2)
+- **Rhonstin** — llama.cpp CMP 90HX patches (decode +66%) and prefill findings
+- **jonpry** — "A Canary in the Crypto Mine" (original debug-booter overflow disclosure)
+- **d3dx9** — Python Falcon emulator
+- **WildFlash1st** — this project: GSP Falcon attack surface audit (v3–v28), SM issue-rate characterization (V2/V1 comparison), kernel 6.12.95 driver port, HFMA2 Tier 3a research, 580.159.03 kernel-compat fixes for 6.12.95
+
+## Remaining Work / Roadmap
+
+### 1. PCIe Gen3 unlock (compute throughput at Gen1 is partial)
+The card's PCIe **hardware link cap is Gen1 x16** (`LnkCap2: 2.5GT/s only`), capping
+prompt/data transfer bandwidth. This cap is likely **fuse/strap-set like the compute
+throttle** — the PLM-open path (now working!) may override it via
+`PCIE_FUSE` (`0x00823810`), `LINK_CONTROL` (`0x0008c000`), `LINK_SPEED` (`0x0008c040`)
+registers (see `docs/CMP90_EXPLOIT.md` §3). bendy2's patch does not touch PCIe;
+extending `kgspCmp90hxApplyComputeOverrides` with the PCIe override is the next
+experiment. Expected gain: Gen3 x16 → up to ~4× PCIe bandwidth.
+
+### 2. Memory upgrade: 10 GB → 20 GB VRAM (open question)
+CMP 90HX ships 10 GB GDDR6X (320-bit bus, 8 Gbit modules). Proposal:
+- **Hardware:** reball/replace the 10× 8 Gbit modules with **16 Gbit (2 GB) GDDR6X**
+  modules → 20 GB on the same 320-bit bus (same chip count, no PCB change in theory)
+- **Software:** unlock the 20 GB geometry in driver/VBIOS via FBPA/CFG1/LMR-style
+  overrides (the same mechanism the CMP 170HX 8→64 GB path uses), plus training-table
+  verification for the new density
+- Open questions: 16 Gbit GDDR6X availability/board layout, thermal design, VBIOS
+  training tables, memory controller support for the density (needs investigation)
+
+### 3. Graphics (PGRAPH2) remain disabled
+Compute is fully unlocked, but 3D/graphics stay gated (GSP-RM skips graphics init;
+`FEAT_READOUT_0 bit8 = 0`). Separate problem — likely requires GSP-RM firmware work.
 
 ## Critical Missing Piece
 

@@ -1,125 +1,165 @@
-# cmpunlocker — CMP 90HX Unlock Research
+# cmpunlocker — CMP 90HX Compute Unlock
 
-[![Status](https://img.shields.io/badge/status-research%20in%20progress-orange)](STATUS.md)
+[![Status](https://img.shields.io/badge/status-compute%20UNLOCKED-brightgreen)](STATUS.md)
 [![Kernel](https://img.shields.io/badge/kernel-6.12.95-blue)](https://kernel.org)
 [![GPU](https://img.shields.io/badge/GPU-CMP%2090HX%20(GA102)-76B900)](https://www.nvidia.com)
 
-Unlock tool for the NVIDIA CMP 90HX (GA102, PCI ID `10de:220d`). Aims to restore full SM compute throughput and unlock PCIe Gen3 that are restricted in firmware/OTP configuration.
+**Full SM compute throughput restored on the NVIDIA CMP 90HX (GA102, PCI ID `10de:220d`, 10 GB GDDR6X).**
+Prefill speed went from **224 t/s → 1824 t/s (+713%, 8.1×)** on a 12B Q4_0 model, with all
+9 SM issue-rate fields verified full.
 
-> **We need help!** The hardware unlock infrastructure is ready (kernel modules build and load on 6.12), but **ROP gadget addresses for the 610.x Falcon booter** are unknown. If you have RISC-V reverse engineering, Falcon emulation, or NVIDIA GPU security experience — please help! See [STATUS.md](STATUS.md) for full technical details.
+The key that finally worked: **bendy2's V67 exploit** (debug-booter overflow → PLM open) on
+**stock NVIDIA Open `580.159.03`**, re-applied at every boot by a systemd service.
+
+---
+
+## TL;DR
+
+| What | Before | After |
+|------|--------|-------|
+| pp512 (12B Q4_0, prefill) | 224.10 t/s | **1824.15 t/s (+713%)** |
+| tg16 (decode) | throttled | 55.96 t/s |
+| SM issue-rate fields (9) | throttled (05/01/05 pattern) | **all 9 full** |
+| PLM (FEAT_OVR) | locked (`0xffffff8f`) | **open (`0xffffffff`)** |
+| Perplexity | 202.67 (throttled, sane) | 53.05 (sane) |
+| PCIe | Gen1 x16 | Gen1 x16 *(hardware link cap, see Roadmap)* |
+
+Verification: `check.sh` reports `DP=full FFMA=full FMLA16=full FMLA32=full IMLA0..4=full`.
+dmesg shows `CMP90HX: V67 attempt=0 status=0x65 PLM=0xffffffff` and
+`compute selectors enabled PLM=0xffffffff SS0=0x88888888 SS1=0x00000008`.
 
 ---
 
 ## Background
 
-The CMP 90HX is a physically complete GA102 die (same silicon as RTX 3080) with compute and PCIe speed artificially limited. This project ports the [original cmpunlocker](https://github.com/amoghmunikote/cmpunlocker) (designed for CMP 170HX/GA100) to the CMP 90HX.
+The CMP 90HX is a physically complete GA102 die (same silicon as RTX 3080, sm_86, 50 SMs)
+with compute throttled via **eFuse-set SM issue-rate modifiers**. VBIOS mods cannot change
+eFuse defaults. The throttle is bypassed by writing the **FEAT_OVR override registers**
+(`SS0=0x88888888`, `SS1=0x00000008`) — but those registers are only writable after opening
+the **PLM (Privilege Level Masks)**, which requires arbitrary code execution on the GSP
+Falcon coprocessor.
 
-### What Works
+**The vulnerability** (originally disclosed by Jon Pry, "A Canary in the Crypto Mine"): the
+shipping GSP debug booter is encrypted with a trivial key and contains a DMA-driven buffer
+overflow that runs arbitrary code *after* signature verification, including a stack-canary
+bypass.
 
-| Feature | Status |
-|---------|--------|
-| Kernel 6.12.95 port | ✅ Complete |
-| PCI ID `10de:220d` support | ✅ Complete |
-| `nvidia.ko` + `nvidia-uvm.ko` build & load | ✅ Stable |
-| GPU initialization (safe-mode) | ✅ 10240 MiB, 53°C |
-| CMP 90HX exploit chain | ⚠️ Activates, but PLM fails |
-| Full SM compute unlock | ❌ Needs ROP gadgets |
-| PCIe Gen3 unlock | ❌ Needs ROP gadgets |
-
-### The Problem
-
-The exploit uses a **ROP chain** executed on the Falcon RISC-V coprocessor. The chain uses `mpopaddret` (HS-mode instruction `0x3b`) and **gadget addresses** — specific locations in the booter code that perform BAR0 writes. These addresses are known for the 580.x firmware (GA100, TU10x GSP), but the 610.x firmware (GA10x GSP) uses a **completely different flat binary format** with different gadget locations.
-
-A working [Python Falcon emulator](https://github.com/d3dx9/cmpunlocker) exists for the 580.x firmware but needs adaptation for the 610.x flat binary format.
-
-### What We Know
-
-- **12 GSP Falcon registers** identified from NVIDIA's own `dev_gsp.h` (MAILBOX0 at BAR0+0x110040, etc.)
-- **Signature format** reverse-engineered: 20-byte header + 2248-byte signature
-- **PLM values** mapped: FEAT=0xffffff8f, FBPA=0xffffff0f, PCIE_FUSE=0x002aaaaa
-- **Target registers**: SS0→0x88888888, SS1→0x00000008, PCIE_FUSE→0x00000000
-- **Hardware**: CMP 90HX on test bench with PCIe x16 mod (soldered components)
+**Why 580.159.03 and not 610.x:** the payload ROP gadgets live in the 580.x booter. On
+610.x the Falcon rejects the payload and PLM stays locked (verified on 610.43.03; the
+gadget analysis in this repo shows the main gadget has no 610.x equivalent). The 610.57.04
+port ([PR #2](https://github.com/WildFlash1st/cmp90hx-unlock/pull/2)) is archived for
+reference but does not unlock.
 
 ---
 
-## Requirements
+## The Working Stack
 
-- Linux (x86-64) with root access
-- NVIDIA CMP 90HX (GA102, PCI ID `10de:220d`) — *also supports `10de:20b0`*
-- **nvidia-open 610.43.0x firmware** already installed
-- Kernel headers matching running kernel
-- Secure Boot disabled
-- Kernel 6.1+ (tested on 6.12.95)
+| Component | What | Where |
+|-----------|------|-------|
+| Runtime driver | **stock** NVIDIA Open `580.159.03` (unmodified) | kernel modules, `updates/cmpunlocker/` |
+| Bootstrap module | `580.159.03` + bendy2's direct-compute patch (V67) | `updates/cmp90hx-persistent/nvidia.ko.bootstrap` |
+| Service | `cmp90hx-persistent.service` — at every boot: load bootstrap → V67 → PLM open → write SS0/SS1 → 2× PCIe bus reset → reload stock driver | systemd (enabled) |
+| Userspace | `580.159.03` (libcuda, libnvidia-ml, nvidia-smi) | from `NVIDIA-Linux-x86_64-580.159.03.run` |
+| Kernel compat | 6.12.95 build fixes for 580.159.03 | [`tools/fix-580-kernel612.sh`](tools/fix-580-kernel612.sh) |
+
+The unlock does **not persist** across power cycles — the service re-applies it at every boot
+(~2 min for one card; don't run `nvidia-smi` or GPU workloads while it runs).
 
 ---
 
-## Install (Safe Mode)
+## Reproducing (for other researchers)
 
-GPU boots stock — stable for testing, but no unlock:
+**Prerequisites:**
+- CMP 90HX with PCI ID `10de:220d / 10de:1555` (check: `lspci -nn`)
+- x86_64 Linux, kernel headers (`/lib/modules/$(uname -r)/build`), Secure Boot **off**
+- sysfs `reset_method` for the card must include `bus`
+- NVIDIA Open `580.159.03` as the runtime driver (see below)
+
+**1. Build & install stock 580.159.03 for kernel 6.12.x:**
 
 ```bash
-cd cmpunlocker
-sudo ./install.sh --profile=cmp90
-# COLD REBOOT required
+git clone https://github.com/NVIDIA/open-gpu-kernel-modules --branch 580.159.03
+# apply kernel-6.12 compat fixes: see tools/fix-580-kernel612.sh
+# (vm_fault_t/mmap_lock, ioremap_*, dma_is_direct, proc_ops, set_memory_array,
+#  handle_mm_fault pt_regs, hv_get_isolation_type, timespec64, follow_pfn, ...)
+make -j$(nproc) modules KERNEL_UNAME=$(uname -r)
+cp kernel-open/nvidia.ko kernel-open/nvidia-uvm.ko /lib/modules/$(uname -r)/updates/cmpunlocker/
+depmod -a
+# userspace: NVIDIA-Linux-x86_64-580.159.03.run --silent --no-kernel-modules
+# reboot, confirm: nvidia-smi → 580.159.03
 ```
 
-### Verify
+**2. Install bendy2's persistent service:**
 
 ```bash
+git clone https://github.com/bendy2/cmp90hx
+cd cmp90hx
+sudo ./install.sh     # verifies driver version + card + bus reset + Secure Boot
+sudo reboot
+```
+
+**3. Verify:**
+
+```bash
+systemctl status cmp90hx-persistent.service     # active (exited) after ~2 min
+cat /run/cmp90hx-persistent-batch.status        # "PASS all 1 CMP90HX GPUs completed"
+./verify.sh                                     # PASS_CMP90HX_PERSISTENT_SERVICE
+sudo CMP90_CHECK_TIMEOUT_SECONDS=15 ./check.sh  # 9/9 issue-rate fields full
 nvidia-smi
-# Expected: CMP 90HX, 10240 MiB, working normally
 ```
 
-### Uninstall
-
-```bash
-sudo ./remove.sh --yes
-```
+**Rollback:** `sudo ./remove.sh --yes && sudo reboot` (restores the stock driver; our own
+610.43.03 stack is preserved under `/root/backup-nvidia-610.43.03-modules/`).
 
 ---
 
-## Development
+## Roadmap / Remaining Work
 
-### Exploit Mode
-
-Requires a valid `dmem.bin` (63KB ROP payload) at `/lib/firmware/nvidia/ga102/gsp/dmem.bin`. When present, safe-mode is automatically disabled.
-
-```bash
-mkdir -p /lib/firmware/nvidia/ga102/gsp/
-# Place valid dmem.bin here
-sudo ./install.sh --profile=cmp90
-```
-
-### Key Files
-
-| File | Purpose |
-|------|---------|
-| `driver/build.sh` | Build script with all 6.12 kernel fixes |
-| `driver/patches/cmp90/0007-*.patch` | CMP90 compute unlock kernel patch |
-| `common/constants.yaml` | Register values, PLM table |
-| `STATUS.md` | Full technical status & research notes |
+1. **PCIe Gen3** — the card's link is **hardware-capped at Gen1 x16** (`LnkCap2: 2.5GT/s`).
+   The cap is likely fuse/strap-set like the compute throttle; the now-working PLM-open path
+   may override it via `PCIE_FUSE` (`0x00823810`), `LINK_CONTROL` (`0x0008c000`),
+   `LINK_SPEED` (`0x0008c040`). Next experiment: extend the compute-override payload with
+   the PCIe override. Expected: ~4× PCIe bandwidth.
+2. **Memory upgrade 10 GB → 20 GB VRAM** — proposal: replace the 10× 8 Gbit GDDR6X modules
+   with 16 Gbit (2 GB) modules (same 320-bit bus, same chip count) and unlock the 20 GB
+   geometry via FBPA/CFG1/LMR-style overrides (the CMP 170HX 8→64 GB mechanism). Open
+   questions: 16 Gbit GDDR6X availability, training tables, memory-controller support.
+3. **Graphics (PGRAPH2)** — 3D/graphics remain gated (GSP-RM skips graphics init).
+   Separate problem, likely needs GSP-RM firmware work.
 
 ---
 
-## How You Can Help
+## History (what didn't work, so you don't repeat it)
 
-We need:
-
-1. **Falcon emulator adaptation** — port `d3dx9/cmpunlocker/tools/booter_emu.py` for 610.x flat `.fwimage` format
-2. **ROP gadget discovery** — find BAR0-write gadgets in the 610.x Falcon booter
-3. **RISC-V reverse engineering** — disassemble SEC2 booter to understand instruction set
-
-If you have experience with any of these, please open an issue or PR!
+| Path | Result |
+|------|--------|
+| VBIOS mods (SM issue-rate in eFuse) | ❌ eFuse is hardware-locked; VBIOS cannot change it |
+| GSP Falcon attack surface (v3–v28, 25 driver iterations) | ❌ all blocked by PKC signatures / hardware firewall / PLM lock |
+| V67 payload on **610.43.03 / 610.57.04** | ❌ Falcon rejects payload; PLM stays locked (gadgets are 580.x-specific) |
+| HFMA2 CUDA-core GEMM in llama.cpp (Tier 3a) | ⚠️ +69% speed but logit-scale bug; **superseded** by the driver unlock |
+| **V67 payload on stock 580.159.03** | ✅ **PLM opens on attempt 0** |
 
 ---
 
 ## Credits
 
-- **Jon Pry** ([@jonpry](https://zenodo.org/records/20916112)) — Original discoverer of the Falcon vulnerability
-- **d3dx9** ([d3dx9/cmpunlocker](https://github.com/d3dx9/cmpunlocker)) — Python Falcon emulator & ROP chain
-- **amoghmunikote** — Original cmpunlocker for CMP 170HX (GA100)
+- **bendy2** — V67 exploit + direct-compute patch for 580.159.03 ([github.com/bendy2/cmp90hx](https://github.com/bendy2/cmp90hx)) — the key that opened PLM
+- **Jon Pry** ([Zenodo](https://zenodo.org/records/20916112)) — "A Canary in the Crypto Mine" (debug-booter overflow disclosure)
+- **d3dx9** — Python Falcon emulator & ROP chain
+- **loss-and-quick** — 610.57.04 port, gadget analysis, tools, English translations (merged PR #2)
+- **Rhonstin** — llama.cpp CMP 90HX patches (decode +66%)
+- **amoghmunikote** — original cmpunlocker for CMP 170HX (GA100)
+- **WildFlash1st** — this repository: GSP audit, issue-rate characterization, kernel 6.12.95 port, 580.159.03 kernel-compat fixes
 
 ---
+
+## Repository Layout
+
+- `STATUS.md` — full research status (registers, exploit chain, benchmark data)
+- `docs/` — exploit writeup, bendy2 analysis, gadget analysis (580.x vs 610.x), testing guide
+- `driver/` — build scripts + patches (610.43.03 era and 610.57.04 port)
+- `tools/` — analysis tools (`lw_catalog_610.py`, `compare_op32.py`, `extract_ucode.py`, `fix-580-kernel612.sh`)
+- `research/` — Falcon attack surface iterations, SM issue-rate comparison
 
 ## License
 
