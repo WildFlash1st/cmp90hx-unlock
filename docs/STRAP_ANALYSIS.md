@@ -1,7 +1,35 @@
 # STRAP Analysis — Manli CMP 90HX (GA102, PG132 SKU 100)
 
 **Date:** 2026-08-15
-**Status:** measurements taken; DEVID_SEL mapping pending (empirical flip test)
+**Status:** schematic decoded (Colorful 3080 Ti E30 Rev, page 32); re-measurement of
+GROUP2 straps (H/M/L levels) pending
+
+## Schematic strap map (Colorful_iGAME_RTX_3080_Ti GA102HC E30, page 32)
+
+Levels: **H = tied to 1.8V, M = tied to 0.9V (divider), L = tied to 0V**.
+
+**GROUP0 (STRAP2, STRAP1, STRAP0) → RAMCFG[4:0]** — memory config (MICRON 8Gb G6X
+19Gbps x16 = same memory as RTX 3080 → no difference expected on the CMP).
+
+**GROUP1 (STRAP0=ROM_SI, STRAP1=ROM_SO, STRAP2=ROM_SCLK)** — SPI ROM interface +
+SMARTFAN[2:0], FS_OVERT (H H H = 0111 FS_OVERT ENABLE).
+
+**GROUP2 (STRAP5, STRAP4, STRAP3) → SMB_ALT_ADDR, DEVID_SEL, PCIE_CFG, VGA_DEVICE:**
+```
+STRAP5 STRAP4 STRAP3 | SMB_ALT_ADDR DEVID_SEL PCIE_CFG VGA_DEVICE
+  M      H      H    |      1         1         1        1
+  M      H      L    |      1         1         1        0
+  M      L      H    |      1         1         0        1
+  M      L      L    |      1         1         0        0
+  L      H      M    |      1         0         1        1
+  L      M      H    |      1         0         1        0
+  L      M      L    |      1         0         0        1
+```
+Field meanings: DEVID_SEL 1=REBRAND 0=ORIGINAL; VGA_DEVICE 1=ENABLE 0=DISABLE;
+PCIE_CFG 1=LOW POWER 0=HIGH POWER; SMB_ALT_ADDR 1=ENABLE 0=DISABLE.
+
+**CMP 90HX (220D) is consistent with DEVID=REBRAND + VGA=DISABLE** (matches 220D and
+the disabled graphics). Target RTX 3080 (2206) = DEVID=ORIGINAL + VGA=ENABLE.
 
 ## Measured strap state (Manli CMP 90HX, device 0x220D)
 
