@@ -244,3 +244,13 @@ Forked at [Rhonstin/cmp90hx-unlock](https://github.com/Rhonstin/cmp90hx-unlock).
 ## Log Files
 
 - `/home/it/cmpunlocker-master/logs/install_*.log`
+
+**PCIe Gen2 breakthrough direction (2026-08-15 evening):** the CMP 170HX (GA100)
+recipe (abobasixseven/unlock-cmp-170hx) shows Gen2 IS reachable via a combined
+PLM+override sequence, NOT straps/VBIOS. Fingerprint on GA102 confirmed the SAME
+register addresses work (XVE base 0x88000 matches): OPT_GEN23=0x1 (Gen2/3 disable
+set), CYA_0 bit2=1 (DIS_G2), LINK_CONFIG_0 MAX_RATE=Gen1, all PLMs closed.
+Driver writes (GPU_REG_WR32 with PLM open): CYA_0 bit2 cleared ✓, PRIV_MISC_1
+bits 11,13 set ✓, but OPT_GEN23/LINK_CTRL_2/VSEC rejected — they need the SEC2
+Booter CSB write path (extend the V67 ROP payload in the signature area, like
+the GA100 recipe's combined 22-register sequence).
