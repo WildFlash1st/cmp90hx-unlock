@@ -275,3 +275,10 @@ the bytecode interpreter (jump table @0xe00, write handler @0xe4e) processes
 multiple commands per payload. Full decode of the command format is required
 for any booter-path (CSB) register write — multi-hour RE. Gen2 remains
 unreachable in this session; the register map + CSB boundary are documented.
+
+**Gen2 two-pair test (2026-08-15 late):** single payload with TWO (value, reg)
+pairs (PLM + OPT_GEN23 at 0xf9f0/0xf9f8): PLM opened, OPT_GEN23 ignored —
+the chain is exactly 18 words (0xf948-0xf9ec) and performs ONE write; 0x81ee
+is the terminator. Single-write CSB mechanism fully confirmed + parameterized
+(value@0xf948, regaddr@0xf960; SS0=5 test proved it). Multi-write requires
+decoding the ROP chain register flow (overflow setup in the booter) — deep RE.
