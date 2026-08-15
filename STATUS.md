@@ -264,3 +264,14 @@ CYA0/PRIV_MISC_1 write fine). Ambiguity: payload parameterization may have
 broken the ROP chain — distinguishing test = write a known-writable register
 (SS0) via the same booter path. If SS0 changes, OPT_GEN23 is SEC2-locked and
 Gen2 is impossible in software (like the affected CMP 170HX revisions).
+
+**Gen2 distinguishing test (2026-08-15 late):** wrote SS0=0x5 via the same
+parameterized second booter execution — SS0 stayed 0x88888888. The second
+kgspExecuteBooterLoad does NOT run the payload chain (booter state after V67
+prevents re-execution, "WPR2 already up"), OR the chain operand mechanism
+differs from the naive (value@0xf948, reg@0xf960) model. Conclusion: the GA100
+recipe's "combined 22-register sequence" must run in ONE payload execution —
+the bytecode interpreter (jump table @0xe00, write handler @0xe4e) processes
+multiple commands per payload. Full decode of the command format is required
+for any booter-path (CSB) register write — multi-hour RE. Gen2 remains
+unreachable in this session; the register map + CSB boundary are documented.
