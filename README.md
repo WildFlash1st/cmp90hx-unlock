@@ -147,9 +147,9 @@ nvidia-smi
 - **Jon Pry** ([Zenodo](https://zenodo.org/records/20916112)) — "A Canary in the Crypto Mine" (debug-booter overflow disclosure)
 - **d3dx9** — Python Falcon emulator & ROP chain
 - **loss-and-quick** — 610.57.04 port, gadget analysis, tools, English translations (merged PR #2)
-- **Rhonstin** — llama.cpp CMP 90HX patches (decode +66%)
+- **Rhonstin** — CMP 90HX patches
 - **amoghmunikote** — original cmpunlocker for CMP 170HX (GA100)
-- **WildFlash1st** — this repository: GSP audit, issue-rate characterization, kernel 6.12.95 port, 580.159.03 kernel-compat fixes
+
 
 ---
 
