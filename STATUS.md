@@ -254,3 +254,13 @@ Driver writes (GPU_REG_WR32 with PLM open): CYA_0 bit2 cleared ✓, PRIV_MISC_1
 bits 11,13 set ✓, but OPT_GEN23/LINK_CTRL_2/VSEC rejected — they need the SEC2
 Booter CSB write path (extend the V67 ROP payload in the signature area, like
 the GA100 recipe's combined 22-register sequence).
+
+**Gen2 booter-path test (2026-08-15 late):** parameterized the V67 payload
+(value/regaddr fields) and ran a second kgspExecuteBooterLoad writing
+OPT_GEN23=0 via the SEC2 booter (CSB path). Result: booter executed
+(status=0x65) but OPT_GEN23 stayed 0x1 — matches the GA100 doc's
+"OPT_GEN23/VSEC permanently locked at SEC2 level" symptom (other registers
+CYA0/PRIV_MISC_1 write fine). Ambiguity: payload parameterization may have
+broken the ROP chain — distinguishing test = write a known-writable register
+(SS0) via the same booter path. If SS0 changes, OPT_GEN23 is SEC2-locked and
+Gen2 is impossible in software (like the affected CMP 170HX revisions).
