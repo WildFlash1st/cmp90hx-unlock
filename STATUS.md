@@ -2,15 +2,39 @@
 
 > Started: 2026-07-26 | GPU: CMP 90HX (GA102, PCI ID `10de:220d`) | Kernel: 6.12.95
 
-## Current State
+## Current State — ✅ COMPUTE UNLOCKED (2026-08-15)
 
-**GPU works in safe-mode** — 10240 MiB GDDR6X, PCIe x16 Gen1, stable.
-Exploit chain activates but PLM doesn't open — Falcon rejects payload.
+**Compute unlock achieved via bendy2's V67 exploit on stock NVIDIA Open `580.159.03`.**
+PLM opens (attempt 0), SS0=0x88888888 / SS1=0x00000008 written at every boot by
+`cmp90hx-persistent.service` (bootstrap module → bus resets → stock driver handoff).
 
 ```
-nvidia-smi → NVIDIA CMP 90HX, 10240 MiB, 53°C, 79W/250W
-dmesg | grep CMP90_DIRECT → SS0=0x16122002 (stock, PLM locked)
+check.sh: PASS DP=full FFMA=full FMLA16=full FMLA32=full IMLA0..4=full   (9/9 fields)
+dmesg   : CMP90HX: V67 attempt=0 status=0x65 PLM=0xffffffff
+          CMP90HX: compute selectors enabled PLM=0xffffffff SS0=0x88888888 SS1=0x00000008
 ```
+
+**Benchmark (gemma-4-12B-it-QAT-Q4_0, pp512):**
+| Metric | Throttled (610.43.03) | Unlocked (580.159.03) |
+|--------|----------------------|----------------------|
+| pp512  | 224.10 t/s           | **1824.15 t/s (+713%)** |
+| tg16   | —                    | 55.96 t/s |
+| PPL    | 202.67               | 53.05 (local corpus) |
+
+PCIe stays **Gen1 x16** — hardware link cap of the card (LnkCap2: 2.5GT/s only),
+not a driver issue. Clocks normal: SM 2100 MHz, mem 9501 MHz.
+
+**Stack:** stock 580.159.03 open modules built for kernel 6.12.95 (compat fixes in
+`/home/it/build/nv-580/fix-580-kernel612.sh`) + bendy2/cmp90hx service (installed
+from `/home/it/bendy2-cmp90hx`). Rollback: `/root/backup-nvidia-610.43.03-modules/`.
+
+**History note:** the same exploit family failed on 610.x (PLM stays locked — Falcon
+rejects the payload); the 610.57.04 port (PR #2) is unnecessary. The HFMA2 Tier 3a
+software bypass (llama.cpp fork) is superseded.
+
+---
+
+## Prior Research Summary
 
 ## What Works
 
