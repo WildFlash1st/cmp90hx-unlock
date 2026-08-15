@@ -119,24 +119,31 @@ PCIE_FUSE:  0x002aaaaa → 0x00000000
 
 ## Remaining Work / Roadmap
 
-### 1. PCIe Gen3 unlock (compute throughput at Gen1 is partial)
-The card's PCIe **hardware link cap is Gen1 x16** (`LnkCap2: 2.5GT/s only`), capping
-prompt/data transfer bandwidth. This cap is likely **fuse/strap-set like the compute
-throttle** — the PLM-open path (now working!) may override it via
-`PCIE_FUSE` (`0x00823810`), `LINK_CONTROL` (`0x0008c000`), `LINK_SPEED` (`0x0008c040`)
-registers (see `docs/CMP90_EXPLOIT.md` §3). bendy2's patch does not touch PCIe;
-extending `kgspCmp90hxApplyComputeOverrides` with the PCIe override is the next
-experiment. Expected gain: Gen3 x16 → up to ~4× PCIe bandwidth.
+### 1. PCIe Gen3 unlock — CONCLUSIVE: Gen1 is HARDWARE-LOCKED (2026-08-15)
+The card's PCIe link is **Gen1 x16** (`LnkCap2: 2.5GT/s only`, `LnkSta: 2.5GT/s x16`).
+The root port (Xeon E3-1200 v3, 00:01.0) is Gen3 (8GT/s) capable — the bottleneck is
+the card itself. Four independent tests prove the Gen1 cap cannot be changed by any
+software/firmware path:
 
-**Experiment 2026-08-15 (PLM open, bootstrap extended with PCIe writes):**
-`PCIE_FUSE_OVR write=0` → readback stays `0x002aaaaa`; `LINK_CTRL write=3` → readback
-stays `0x2`; `LINK_SPEED` read-only. **The writes are silently rejected even with PLM
-open** (unlike SS0/SS1 which take). Device `LnkCap2` hardwired to 2.5GT/s; the root
-port (Xeon E3-1200 v3, 00:01.0) is Gen3 (8GT/s) capable — the bottleneck is the card
-itself. Remaining candidates: (a) **VBIOS cross-flash** — if the PHY capability is
-VBIOS-programmed at POST, transplant an RTX 3080 (Gen4 GA102) VBIOS with CMP memory
-timings (`GA102.rom` + `factory_backup3080.rom` on hand); (b) **strap resistors** on
-the PCB (same mechanism as the device-ID straps).
+| Test | Result |
+|------|--------|
+| `PCIE_FUSE_OVR` (0x00823810)=0 with **PLM open** | rejected — readback stays 0x002aaaaa |
+| `LINK_CONTROL` (0x0008c000)=3 with PLM open | rejected — readback stays 0x2 |
+| **RTX 3080 VBIOS flashed** (Manli, device-ID swap works) | `LnkCap2` STILL 2.5GT/s; GSP hangs at memory training (BCT incompatible) |
+| Capability registers in **compute-unlocked state** (PLM open, SS0/SS1 written) | `LnkCap/LnkCap2` STILL 2.5GT/s only |
+
+Community data (Habr "Тёмные лошадки ИИ", CMP 90HX teardown): the ×4→×16 lane mod
+(24 missing AC-coupling caps 0402) works on some CMP PCBs, **but the link stays
+PCIe 1.1** even after the mod — Gen1 is baked deeper than the lanes. Device ID
+(220D) is also strap-set (unchanged by the 3080 VBIOS). The `PCIE_CFG` strap on
+GA102 PG132 is documented as LOW/HIGH POWER selection, not a link-gen selector.
+
+**Conclusion:** PCIe Gen1 is a hardware (strap/fuse/PHY) characteristic of the CMP
+90HX. The only remaining avenue is physical strap/PCB analysis (photos of the bare
+PCB around the GA102 package + PCIe connector, compared against PG132 schematics),
+with no community evidence that it yields Gen3. The unlock (pp512 224→1824 t/s) is
+not PCIe-bound and remains fully effective at Gen1.
+
 
 ### 2. Memory upgrade: 10 GB → 20 GB VRAM (open question)
 CMP 90HX ships 10 GB GDDR6X (320-bit bus, 8 Gbit modules). Proposal:
