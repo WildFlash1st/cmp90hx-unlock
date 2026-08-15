@@ -282,3 +282,19 @@ the chain is exactly 18 words (0xf948-0xf9ec) and performs ONE write; 0x81ee
 is the terminator. Single-write CSB mechanism fully confirmed + parameterized
 (value@0xf948, regaddr@0xf960; SS0=5 test proved it). Multi-write requires
 decoding the ROP chain register flow (overflow setup in the booter) — deep RE.
+
+**CSB-write breakthrough + Gen2 final verdict (2026-08-15 night):**
+- The V67 payload chain is BLOCK-CONSTRAINED to the FEAT_OVR block:
+  registers are addressed as 0x823800 + (low byte of the 0xf960 operand).
+  Explains all earlier "CSB-protected" failures: OPT_GEN23 (0x82057c) and
+  LINK_CTRL2 (0x880a8) writes actually targeted 0x82387c/0x8238a8.
+- **CSB CAN write what the driver cannot within the block: PCIE_FUSE
+  (0x00823810) went 0x002aaaaa → 0x00000000 via the V67 chain** (driver
+  write was rejected before).
+- PCIE_FUSE=0 did NOT open the gates for OPT_GEN23/LINK_CTRL2/VSEC (still
+  reject BAR0 writes) and did NOT change LnkCap2.
+- **Gen2 final verdict:** unlike the CMP 170HX (whose PHY advertised Gen2
+  with only a signaling disable via OPT_GEN23), the CMP 90HX advertises
+  LnkCap2 = 2.5GT/s ONLY — the Gen1 PHY capability is fused. Link training
+  cannot exceed the advertised capability regardless of any override
+  register. Gen2 is not achievable in software on this card.
