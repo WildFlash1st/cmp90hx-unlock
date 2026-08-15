@@ -298,3 +298,12 @@ decoding the ROP chain register flow (overflow setup in the booter) — deep RE.
   LnkCap2 = 2.5GT/s ONLY — the Gen1 PHY capability is fused. Link training
   cannot exceed the advertised capability regardless of any override
   register. Gen2 is not achievable in software on this card.
+
+**PCIE_FUSE restore control test (2026-08-16):** restored PCIE_FUSE to stock
+0x002aaaaa via the CSB path (proving the CSB write primitive works both ways:
+0x002aaaaa -> 0 -> 0x002aaaaa). nvidia-smi pcie.link.gen.max stayed 2 with the
+stock value — **gen.max=2 is a STATIC driver value, NOT a PCIE_FUSE effect**
+(the user's hypothesis is disproven; gen.max was 2 before any PCIe experiments).
+Combined with the FUSE0test (PCIE_FUSE=0 does not unlock OPT_GEN23/LINK_CTRL2/
+VSEC) and LnkCap2=2.5GT/s: **Gen2 is definitively not achievable in software
+on this card.**
