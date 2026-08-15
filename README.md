@@ -67,6 +67,47 @@ The unlock does **not persist** across power cycles — the service re-applies i
 
 ---
 
+## One-Click Installer
+
+For most users, everything is automated — download this repository (Code → Download ZIP),
+extract, and run:
+
+```bash
+cd cmpunlocker-master
+sudo ./install-unlock.sh
+```
+
+The wizard will:
+1. Detect your OS, kernel, GPU (`10de:220d/1555`) and check all prerequisites
+   (kernel headers, build tools, Secure Boot, PCIe bus reset) — and install missing
+   Debian/Ubuntu packages automatically;
+2. Build & install the stock NVIDIA Open `580.159.03` kernel modules (with kernel
+   compat fixes) if your driver is not already that version;
+3. Install the matching userspace (libcuda / libnvidia-ml / nvidia-smi) from NVIDIA's
+   `.run` (~380 MB download) if needed;
+4. Install bendy2's persistent unlock service (V67 → PLM open → SS0/SS1 at every boot);
+5. Print verification, rollback and donation info.
+
+Then: `sudo reboot` → wait ~2 min → verify with `check.sh` (9/9 fields "full").
+The installer backs up your previous driver modules automatically.
+
+Requirements: CMP 90HX (10de:220d/1555), x86_64 Linux, kernel ≥ 6.1, Secure Boot off,
+internet on first run.
+
+---
+
+## Donations
+
+This research is done in the open. If the unlock helped you, a donation keeps the
+investigation going (PCIe Gen3, 20 GB VRAM memory upgrade, graphics):
+
+```
+Litecoin: LTC1QTA33QANK4L6JLDVRCR9WP4C8MT555V3FA0RX5M
+TON:      UQDSGnFHAN86TZyTI6q-JsDCSy9Iwm6xseoxh7VyIzXNn3wm
+```
+
+---
+
 ## Reproducing (for other researchers)
 
 **Prerequisites:**
