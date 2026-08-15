@@ -48,6 +48,21 @@ resistor determines the logic level. Measured with multimeter (continuity to GND
 
 Current mask (S0..S5): `0 1 0 1 0 0` → device **0x220D (CMP 90HX)**.
 
+## 🔒 CONCLUSIVE (2026-08-15): the board is a STOCK 3080, the CMP is in the die fuses
+
+The reference NVIDIA RTX 3080 PG132 schematic (`NVIDIA_GeForce_RTX_3080_...PG132_B01_Rev_C`,
+page 32) shows the SAME strap population as the Manli CMP:
+- R5236/R5241/R5245 = COMMON (populated), R5237/R5240/R5244 = NO STUFF (empty) — **identical**
+- The CMP's combo (STRAP5=L, STRAP4=L, STRAP3=H) is marked **"Default"** in the reference
+  table and decodes there as DEVID=ORIGINAL, VGA=ENABLE, PCIE=HIGH POWER
+
+**Conclusion:** the Manli CMP 90HX is a stock PG132 3080 board with default 3080 straps.
+The CMP identity (device 220D, compute throttle, PCIe Gen1, graphics disabled) is 100%
+die-fuse based — the fused die overrides the strap-encoded values. **No strap change can
+produce a 2206** (the straps already say "3080"; the fuses win). The strap avenue is
+closed. The only software lever remains the FEAT_OVR register overrides (SS0/SS1,
+compute — implemented in the unlock).
+
 ## GA102 device ID table (authoritative, from g_nv_name_released.h)
 
 | Device ID | Name |
