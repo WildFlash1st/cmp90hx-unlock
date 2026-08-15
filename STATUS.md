@@ -131,6 +131,7 @@ software/firmware path:
 | `LINK_CONTROL` (0x0008c000)=3 with PLM open | rejected — readback stays 0x2 |
 | **RTX 3080 VBIOS flashed** (Manli, device-ID swap works) | `LnkCap2` STILL 2.5GT/s; GSP hangs at memory training (BCT incompatible) |
 | Capability registers in **compute-unlocked state** (PLM open, SS0/SS1 written) | `LnkCap/LnkCap2` STILL 2.5GT/s only |
+| **FEAT_OVR block probe** (0x08/0x0C/0x18 = 0xFFFFFFFF, PLM open) | 0x0C = SS0 mirror (RO), 0x18 = 0, **0x08 writable** (0x00100282→0x03900bbb, function unknown) — LnkCap2 STILL 2.5GT/s |
 
 Community data (Habr "Тёмные лошадки ИИ", CMP 90HX teardown): the ×4→×16 lane mod
 (24 missing AC-coupling caps 0402) works on some CMP PCBs, **but the link stays
