@@ -128,6 +128,16 @@ registers (see `docs/CMP90_EXPLOIT.md` §3). bendy2's patch does not touch PCIe;
 extending `kgspCmp90hxApplyComputeOverrides` with the PCIe override is the next
 experiment. Expected gain: Gen3 x16 → up to ~4× PCIe bandwidth.
 
+**Experiment 2026-08-15 (PLM open, bootstrap extended with PCIe writes):**
+`PCIE_FUSE_OVR write=0` → readback stays `0x002aaaaa`; `LINK_CTRL write=3` → readback
+stays `0x2`; `LINK_SPEED` read-only. **The writes are silently rejected even with PLM
+open** (unlike SS0/SS1 which take). Device `LnkCap2` hardwired to 2.5GT/s; the root
+port (Xeon E3-1200 v3, 00:01.0) is Gen3 (8GT/s) capable — the bottleneck is the card
+itself. Remaining candidates: (a) **VBIOS cross-flash** — if the PHY capability is
+VBIOS-programmed at POST, transplant an RTX 3080 (Gen4 GA102) VBIOS with CMP memory
+timings (`GA102.rom` + `factory_backup3080.rom` on hand); (b) **strap resistors** on
+the PCB (same mechanism as the device-ID straps).
+
 ### 2. Memory upgrade: 10 GB → 20 GB VRAM (open question)
 CMP 90HX ships 10 GB GDDR6X (320-bit bus, 8 Gbit modules). Proposal:
 - **Hardware:** reball/replace the 10× 8 Gbit modules with **16 Gbit (2 GB) GDDR6X**
