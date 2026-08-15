@@ -63,6 +63,34 @@ produce a 2206** (the straps already say "3080"; the fuses win). The strap avenu
 closed. The only software lever remains the FEAT_OVR register overrides (SS0/SS1,
 compute — implemented in the unlock).
 
+## Memory (20 GB VRAM) research — RAMCFG straps (2026-08-15)
+
+**The PCB supports 16 Gb chips** — the reference PG132 chip-pinout pages (5-8) document
+both 8 Gb and 16 Gb GDDR6X on the same pads (same 10-chip 320-bit layout). A 20 GB swap
+= 10 × 16 Gb (2 GB) GDDR6X, same chip count, no PCB change.
+
+**RAMCFG strap table (reference 3080 PG132, page 32):**
+```
+STRAP2 STRAP1 STRAP0 | RAMCFG[4:0] | Config
+  L      L      L    |   00000     | RAMCFG TBD
+  L      H      L    |   00010     | RAMCFG TBD  ← CMP 90HX uses this!
+  H      L      L    |   00100     | MICRON 8Gb 19Gbps
+  H      L      H    |   00101     | RAMCFG TBD
+  L      H      M    |   01011     | MICRON 8Gb 21Gbps
+```
+The CMP's RAMCFG = **00010 = "TBD" (custom engineering config)**. The 16 Gb x16 strap
+value is NOT documented in these schematics (all rows are 8 Gb or TBD). Source for the
+16 Gb value: the engineering **3080 Ti 20 GB** schematic/boardview, or empirical.
+
+**The 20 GB recipe (chips+straps are NOT sufficient):**
+1. Check the die's fused memory geometry first (FBPA 0x009a0148 / LMR config, readable
+   with PLM open via the bootstrap) — the CMP die is heavily fused (ID/throttle/PCIe);
+   the memory-size limit must be ruled out (the CMP 170HX's 8 GB was fuse-limited!)
+2. Find the 16 Gb RAMCFG strap value (3080 Ti 20 GB donor schematic)
+3. Obtain a VBIOS with a 16 Gb BCT (training tables per density) — without it memory
+   training hangs (proven by the 3080 VBIOS flash experiment)
+4. Reball 10 × 16 Gb chips, set straps, flash the 16 Gb VBIOS
+
 ## GA102 device ID table (authoritative, from g_nv_name_released.h)
 
 | Device ID | Name |
