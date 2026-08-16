@@ -164,10 +164,78 @@ initialization is controlled by signed GSP firmware reading an eFuse bit.
 - `drivers/gpu/drm/nouveau/nvkm/subdev/gsp/` — GSP interface
 - `drivers/gpu/drm/nouveau/nvkm/subdev/fuse/gm107.c` — Fuse reading
 
-## Next Steps (If Pursuing)
+## Why There's Still Hope
 
-1. **Probe 0x823808** — write various patterns, check effects on PGRAPH
-2. **PMC_ENABLE bit12** — try forcing GR power-on after compute unlock
-3. **Dump GSP-RM firmware** — compare CMP vs RTX systems
-4. **RE GSP RISC-V code** — find SKU/FEAT_READOUT check location
-5. **Community outreach** — check if anyone has achieved this
+**Key fact from bendy2**: "不是 fuse/硬件阉割，是固件层面的 init 跳过"
+(Not fuse/hardware castration, but firmware-level init skip)
+
+This means:
+- **PGRAPH hardware physically EXISTS and works** on CMP 90HX
+- The silicon is identical to RTX 3090
+- Only the initialization is skipped by GSP-RM firmware
+- If we can force initialization, graphics should work
+
+The difference from compute unlock: we found SS0/SS1 override registers.
+For graphics, we haven't found the equivalent yet — but it may exist.
+
+## Concrete Experiments (NOT YET DONE)
+
+### 1. Systematic 0x823808 Probe
+This register is writable but function unknown. Test all relevant patterns:
+
+```bash
+# After compute unlock (PLM open), try:
+./rm_reg write 0x823808 0x00000100  # bit8 set
+./rm_reg write 0x823808 0x00000233  # RTX 3090 FEAT_READOUT value
+./rm_reg write 0x823808 0xFFFFFFFF  # all bits
+# After each write, check:
+./rm_reg read 0x400000  # PGRAPH base - should NOT be 0xBADF if working
+```
+
+### 2. PMC_ENABLE bit12 (Force GR Power-On)
+NV_PMC_ENABLE @ 0x200, bit12 = GR engine enable:
+
+```bash
+# Read current PMC_ENABLE
+./rm_reg read 0x200
+# Set bit12 (GR enable)
+./rm_reg write 0x200 0x????1???  # OR current value with 0x1000
+# Check PGRAPH registers
+./rm_reg read 0x400000
+./rm_reg read 0x409604  # GPC count
+```
+
+### 3. V67 Payload Modification
+Current V67 writes SS0/SS1 after PLM open. Could extend to:
+- Write to 0x823808 with graphics-enable pattern
+- Write to PMC_ENABLE bit12
+- Probe GSP data segment for cached FEAT_READOUT result
+
+### 4. GSP-RM Firmware Analysis
+```bash
+# Extract and compare firmware
+binwalk /lib/firmware/nvidia/610.43.03/gsp_ga10x.bin
+# Disassemble RISC-V code, search for:
+# - 0x823814 reference (FEAT_READOUT read)
+# - 0x220D reference (device ID check)
+# - Conditional branch after fuse read
+```
+
+### 5. Runtime Memory Patching
+If GSP caches FEAT_READOUT result in DMEM/IMEM:
+- Find the cached value location via V67 memory scan
+- Patch it to 0x233 (bit8=1) before PGRAPH init decision
+- This would require understanding GSP boot sequence timing
+
+## Summary
+
+| Path | Difficulty | Tested? |
+|------|------------|---------|
+| 0x823808 systematic probe | Low | ❌ No |
+| PMC_ENABLE bit12 | Low | ❌ No |
+| V67 payload extension | Medium | ❌ No |
+| GSP firmware RE | High | ❌ No |
+| GSP memory patching | Very High | ❌ No |
+
+**The "blocked" status means: no KNOWN path works, not that it's impossible.**
+Several low-difficulty experiments remain untested.
