@@ -5,11 +5,11 @@
 [![GPU](https://img.shields.io/badge/GPU-CMP%2090HX%20(GA102)-76B900)](https://www.nvidia.com)
 
 **Full SM compute throughput restored on the NVIDIA CMP 90HX (GA102, PCI ID `10de:220d`, 10 GB GDDR6X).**
-Prefill speed went from **224 t/s → 1824 t/s (+713%, 8.1×)** on a 12B Q4_0 model, with all
+Prefill speed went from **224 t/s → 1770 t/s (~7.9×)** on a 12B Q4_0 model, with all
 9 SM issue-rate fields verified full.
 
-The key that finally worked: **bendy2's V67 exploit** (debug-booter overflow → PLM open) on
-**stock NVIDIA Open `580.159.03`**, re-applied at every boot by a systemd service.
+**Primary stack: rejoin15 on NVIDIA Open `610.43.03`** — V67 exploit inlined into driver init
+(no systemd service, survives reboots). Alternative: bendy2's V67 on `580.159.03` with systemd service.
 
 ---
 
@@ -44,15 +44,31 @@ shipping GSP debug booter is encrypted with a trivial key and contains a DMA-dri
 overflow that runs arbitrary code *after* signature verification, including a stack-canary
 bypass.
 
-**Why 580.159.03 and not 610.x:** the payload ROP gadgets live in the 580.x booter. On
-610.x the Falcon rejects the payload and PLM stays locked (verified on 610.43.03; the
-gadget analysis in this repo shows the main gadget has no 610.x equivalent). The 610.57.04
-port ([PR #2](https://github.com/WildFlash1st/cmp90hx-unlock/pull/2)) is archived for
-reference but does not unlock.
+**Why 610.43.03 now works (rejoin trick):** earlier 610.x attempts failed because the V67
+payload was injected *pre-GFW* — the boot-time FWSEC/WPR-meta checks rejected it. The
+rejoin14/15 patches move the injection to *after* `GFW_BOOT OK`: swap signature memdesc →
+run V67 chain (PLM opens) → driver writes SS0/SS1 → official FLR + `nv_start_device` retry.
+The 580.159.03 stack (bendy2 + systemd service) remains a valid alternative.
 
 ---
 
 ## The Working Stack
+
+### Option A: rejoin15 on 610.43.03 (recommended)
+
+V67 exploit inlined into driver init — no systemd service, survives reboots.
+
+| Component | What | Where |
+|-----------|------|-------|
+| Driver | NVIDIA Open `610.43.03` + rejoin14/15 patches | kernel modules, `updates/cmpunlocker/` |
+| Userspace | `610.43.03` (libcuda, libnvidia-ml, nvidia-smi) | from `.run` installer |
+| GSP firmware | `gsp_ga10x.bin` | `/lib/firmware/nvidia/610.43.03/` |
+
+Install: `sudo ./install.sh --profile=cmp90-rejoin15`
+
+### Option B: bendy2 on 580.159.03 (legacy)
+
+V67 via systemd service — re-applies at every boot (~2 min).
 
 | Component | What | Where |
 |-----------|------|-------|
@@ -61,9 +77,6 @@ reference but does not unlock.
 | Service | `cmp90hx-persistent.service` — at every boot: load bootstrap → V67 → PLM open → write SS0/SS1 → 2× PCIe bus reset → reload stock driver | systemd (enabled) |
 | Userspace | `580.159.03` (libcuda, libnvidia-ml, nvidia-smi) | from `NVIDIA-Linux-x86_64-580.159.03.run` |
 | Kernel compat | 6.12.95 build fixes for 580.159.03 | [`tools/fix-580-kernel612.sh`](tools/fix-580-kernel612.sh) |
-
-The unlock does **not persist** across power cycles — the service re-applies it at every boot
-(~2 min for one card; don't run `nvidia-smi` or GPU workloads while it runs).
 
 ---
 
@@ -74,21 +87,21 @@ extract, and run:
 
 ```bash
 cd cmpunlocker-master
+# Recommended: rejoin15 on 610.43.03 (V67 inlined into driver, no service)
+sudo ./install.sh --profile=cmp90-rejoin15
+
+# Alternative: bendy2 on 580.159.03 (V67 via systemd service)
 sudo ./install-unlock.sh
 ```
 
-The wizard will:
-1. Detect your OS, kernel, GPU (`10de:220d/1555`) and check all prerequisites
-   (kernel headers, build tools, Secure Boot, PCIe bus reset) — and install missing
-   Debian/Ubuntu packages automatically;
-2. Build & install the stock NVIDIA Open `580.159.03` kernel modules (with kernel
-   compat fixes) if your driver is not already that version;
-3. Install the matching userspace (libcuda / libnvidia-ml / nvidia-smi) from NVIDIA's
-   `.run` (~380 MB download) if needed;
-4. Install bendy2's persistent unlock service (V67 → PLM open → SS0/SS1 at every boot);
-5. Print verification, rollback and donation info.
+**rejoin15** builds 610.43.03 + rejoin14/15 patches from source, installs to
+`/lib/modules/$(uname -r)/updates/cmpunlocker/`. Requires GSP firmware
+(`/lib/firmware/nvidia/610.43.03/gsp_ga10x.bin`) from the 610.43.03 `.run` installer.
 
-Then: `sudo reboot` → wait ~2 min → verify with `check.sh` (9/9 fields "full").
+**bendy2** installs stock 580.159.03 + systemd service that re-applies V67 at every boot
+(~2 min wait after reboot).
+
+Then: `sudo reboot` → verify with `check.sh` (9/9 fields "full").
 The installer backs up your previous driver modules automatically.
 
 Requirements: CMP 90HX (10de:220d/1555), x86_64 Linux, kernel ≥ 6.1, Secure Boot off,
@@ -113,44 +126,50 @@ TON:      UQDSGnFHAN86TZyTI6q-JsDCSy9Iwm6xseoxh7VyIzXNn3wm
 **Prerequisites:**
 - CMP 90HX with PCI ID `10de:220d / 10de:1555` (check: `lspci -nn`)
 - x86_64 Linux, kernel headers (`/lib/modules/$(uname -r)/build`), Secure Boot **off**
-- sysfs `reset_method` for the card must include `bus`
-- NVIDIA Open `580.159.03` as the runtime driver (see below)
 
-**1. Build & install stock 580.159.03 for kernel 6.12.x:**
+### Method A: rejoin15 on 610.43.03 (recommended)
 
 ```bash
+# 1. Install stock 610.43.03 (userspace + GSP firmware)
+wget https://download.nvidia.com/XFree86/Linux-x86_64/610.43.03/NVIDIA-Linux-x86_64-610.43.03.run
+chmod +x NVIDIA-Linux-x86_64-610.43.03.run
+sudo ./NVIDIA-Linux-x86_64-610.43.03.run --silent --no-kernel-modules
+# GSP firmware: /lib/firmware/nvidia/610.43.03/gsp_ga10x.bin
+
+# 2. Build & install patched modules
+sudo ./install.sh --profile=cmp90-rejoin15
+sudo reboot
+
+# 3. Verify
+./check.sh   # 9/9 issue-rate fields full
+nvidia-smi   # 610.43.03
+dmesg | grep CMP90   # PLM=0xffffffff, SS0=0x88888888
+```
+
+### Method B: bendy2 on 580.159.03 (legacy)
+
+```bash
+# 1. Build & install stock 580.159.03 for kernel 6.12.x
 git clone https://github.com/NVIDIA/open-gpu-kernel-modules --branch 580.159.03
 # apply kernel-6.12 compat fixes: see tools/fix-580-kernel612.sh
-# (vm_fault_t/mmap_lock, ioremap_*, dma_is_direct, proc_ops, set_memory_array,
-#  handle_mm_fault pt_regs, hv_get_isolation_type, timespec64, follow_pfn, ...)
 make -j$(nproc) modules KERNEL_UNAME=$(uname -r)
 cp kernel-open/nvidia.ko kernel-open/nvidia-uvm.ko /lib/modules/$(uname -r)/updates/cmpunlocker/
 depmod -a
 # userspace: NVIDIA-Linux-x86_64-580.159.03.run --silent --no-kernel-modules
 # reboot, confirm: nvidia-smi → 580.159.03
-```
 
-**2. Install bendy2's persistent service:**
-
-```bash
+# 2. Install bendy2's persistent service
 git clone https://github.com/bendy2/cmp90hx
 cd cmp90hx
-sudo ./install.sh     # verifies driver version + card + bus reset + Secure Boot
-sudo reboot
-```
+sudo ./install.sh
+sudo reboot   # wait ~2 min for service
 
-**3. Verify:**
-
-```bash
+# 3. Verify
 systemctl status cmp90hx-persistent.service     # active (exited) after ~2 min
-cat /run/cmp90hx-persistent-batch.status        # "PASS all 1 CMP90HX GPUs completed"
-./verify.sh                                     # PASS_CMP90HX_PERSISTENT_SERVICE
-sudo CMP90_CHECK_TIMEOUT_SECONDS=15 ./check.sh  # 9/9 issue-rate fields full
-nvidia-smi
+./check.sh   # 9/9 issue-rate fields full
 ```
 
-**Rollback:** `sudo ./remove.sh --yes && sudo reboot` (restores the stock driver; our own
-610.43.03 stack is preserved under `/root/backup-nvidia-610.43.03-modules/`).
+**Rollback:** `sudo ./remove.sh --yes && sudo reboot`
 
 ---
 
@@ -176,8 +195,9 @@ nvidia-smi
 |------|--------|
 | VBIOS mods (SM issue-rate in eFuse) | ❌ eFuse is hardware-locked; VBIOS cannot change it |
 | GSP Falcon attack surface (v3–v28, 25 driver iterations) | ❌ all blocked by PKC signatures / hardware firewall / PLM lock |
-| V67 payload on **610.43.03 / 610.57.04** | ❌ Falcon rejects payload; PLM stays locked (gadgets are 580.x-specific) |
+| V67 payload on 610.x **pre-GFW** (early attempts) | ❌ FWSEC/WPR-meta checks reject pre-GFW injection |
 | HFMA2 CUDA-core GEMM in llama.cpp (Tier 3a) | ⚠️ +69% speed but logit-scale bug; **superseded** by the driver unlock |
+| **V67 payload on 610.43.03 via rejoin15** | ✅ **PLM opens** (post-GFW injection) |
 | **V67 payload on stock 580.159.03** | ✅ **PLM opens on attempt 0** |
 
 ---
