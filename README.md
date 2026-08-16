@@ -94,17 +94,7 @@ The installer backs up your previous driver modules automatically.
 Requirements: CMP 90HX (10de:220d/1555), x86_64 Linux, kernel ≥ 6.1, Secure Boot off,
 internet on first run.
 
----
 
-## Donations
-
-This research is done in the open. If the unlock helped you, a donation keeps the
-investigation going (PCIe Gen3, 20 GB VRAM memory upgrade, graphics):
-
-```
-Litecoin: LTC1QTA33QANK4L6JLDVRCR9WP4C8MT555V3FA0RX5M
-TON:      UQDSGnFHAN86TZyTI6q-JsDCSy9Iwm6xseoxh7VyIzXNn3wm
-```
 
 ---
 
