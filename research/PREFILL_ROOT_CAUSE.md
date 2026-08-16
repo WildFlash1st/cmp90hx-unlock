@@ -57,8 +57,32 @@ Estimated result: **pp512 224 → ~1300 t/s** (5.8×), close to 3080's 3009.
 
 - [x] Root cause identified: IMMA throttled 13.4× (exact math match)
 - [x] DP4A path tested: 122 t/s (worse — rejected)
-- [ ] HFMA2 GEMM kernel implementation (Tier 3a)
-- [ ] Benchmark after Tier 3a
+- [x] HFMA2 experiment: +69% but **logit-scale bug** (see below)
+- [x] **SUPERSEDED**: driver unlock (rejoin15) gives 7.9× without code changes
+
+## HFMA2 Logit-Scale Bug Analysis (2026-08-16)
+
+**Root Cause:**
+- IMMA uses INT32 accumulation (`mma.sync...s32.s8.s8.s32`) — max 2.1B, exact arithmetic
+- Pure HFMA2 uses FP16 accumulation — max 65504 (32,000× smaller!)
+- For K=4096 (hidden_dim), average product must stay <16 to avoid overflow
+- Activation outliers (magnitudes 20-100 in 12B models) trigger transient overflow
+
+**Failure Mode:**
+- FP16 overflow → `+Inf` (not gradual degradation)
+- In softmax: `+Inf` logit → wrong token with P=1.0 (silent wrong output)
+- Multiple `+Inf` → `Inf - Inf = NaN` → garbage tokens
+
+**Correct Fix (if needed in future):**
+```cuda
+// FP16 inputs, FP32 accumulator — zero speed penalty on Ampere!
+mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
+// or cuBLAS:
+CUBLAS_COMPUTE_32F_FAST_16F
+```
+
+**Why not pursued:** rejoin15 driver unlock gives pp512 1770 t/s (7.9×) on stock
+llama.cpp without any code changes. HFMA2 path would give ~1300 t/s at best.
 
 ## Files touched (temporary experiments, all reverted)
 - `mmq.cuh` — TURING_MMA_AVAILABLE #undef for sm_86 (reverted: 122 t/s)

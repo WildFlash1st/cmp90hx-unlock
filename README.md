@@ -196,7 +196,7 @@ systemctl status cmp90hx-persistent.service     # active (exited) after ~2 min
 | VBIOS mods (SM issue-rate in eFuse) | ❌ eFuse is hardware-locked; VBIOS cannot change it |
 | GSP Falcon attack surface (v3–v28, 25 driver iterations) | ❌ all blocked by PKC signatures / hardware firewall / PLM lock |
 | V67 payload on 610.x **pre-GFW** (early attempts) | ❌ FWSEC/WPR-meta checks reject pre-GFW injection |
-| HFMA2 CUDA-core GEMM in llama.cpp (Tier 3a) | ⚠️ +69% speed but logit-scale bug; **superseded** by the driver unlock |
+| HFMA2 CUDA-core GEMM in llama.cpp (Tier 3a) | ⚠️ +69% but FP16 accumulator overflow → wrong tokens; **superseded** by driver unlock (see `research/PREFILL_ROOT_CAUSE.md`) |
 | **V67 payload on 610.43.03 via rejoin15** | ✅ **PLM opens** (post-GFW injection) |
 | **V67 payload on stock 580.159.03** | ✅ **PLM opens on attempt 0** |
 
