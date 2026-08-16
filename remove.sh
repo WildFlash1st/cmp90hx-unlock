@@ -112,11 +112,23 @@ for gsp in /lib/firmware/nvidia/*/gsp_tu10x.bin; do
         "${gsp}.cmpunlocker.pat"
 done
 
+# rejoin15 profile leftovers (pearlfortune-style depmod override, if present)
+if [[ -f /etc/depmod.d/cmpunlocker-90hx-stockflow.conf ]]; then
+    rm -f /etc/depmod.d/cmpunlocker-90hx-stockflow.conf
+    depmod -a 2>/dev/null || true
+    ok "Removed /etc/depmod.d/cmpunlocker-90hx-stockflow.conf"
+fi
+
 if [[ -d "${INSTALL_DIR}" ]]; then
     rm -rf "${INSTALL_DIR}"
     ok "Removed ${INSTALL_DIR}"
 else
     warn "${INSTALL_DIR} not found (ok for module-only installs)"
+fi
+
+if systemctl is-enabled --quiet cmp90hx-persistent.service 2>/dev/null; then
+    info "cmp90hx-persistent.service (bendy2 bootstrap stack) is still ENABLED."
+    info "It stays managed by bendy2's install.sh — this remove.sh does not touch it."
 fi
 
 step "Step 4/5: Reloading stock NVIDIA driver"

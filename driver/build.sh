@@ -73,6 +73,8 @@ shopt -s nullglob
 
 if [[ "${PROFILE}" == "cmp90" ]]; then
     PROFILE_PATCH_DIR="${PATCH_DIR}/cmp90"
+elif [[ "${PROFILE}" == "cmp90-rejoin15" ]]; then
+    PROFILE_PATCH_DIR="${PATCH_DIR}/cmp90-rejoin15"
 else
     PROFILE_PATCH_DIR="${PATCH_DIR}/cmp170hx"
 fi
@@ -87,6 +89,7 @@ ok "All patches applied (profile: ${PROFILE})"
 
 # ── CMP90/HX PCI-ID adapter (post-patch) ──
 # The CMP90 patch is hardcoded for 0x20B0. For CMP 90HX (0x220D), replace.
+# rejoin15 patches already target 10de:220d/10de:1555 directly — skip.
 if [[ "${PROFILE}" == "cmp90" ]]; then
     info "Patching PCI ID: 0x20B0 → 0x220D for CMP 90HX support..."
     ADAPT_FILES=(
@@ -206,12 +209,26 @@ case "${PROFILE}" in
         LMR=""
         FB_BYTES=""
         ;;
+    cmp90-rejoin15)
+        PROFILE="cmp90-rejoin15"
+        UNLOCK_LABEL="CMP90-REJOIN15-PERSISTENT"
+        CFG1=""
+        LMR=""
+        FB_BYTES=""
+        # rejoin15 embeds the V67 chain in a 0xfa00 signature buffer; the huge
+        # generated/g_bindata.c at -O2 eats ~8-10 GB RAM on some rigs.
+        if [[ -f "${SRC_DIR}/src/nvidia/Makefile" ]] && \
+           ! grep -qF "CMP90_LOW_MEM_G_BINDATA" "${SRC_DIR}/src/nvidia/Makefile"; then
+            printf '\n# CMP90_LOW_MEM_G_BINDATA: compile huge firmware bindata at O0 on low-memory rigs.\n$(call BUILD_OBJECT_LIST,generated/g_bindata.c): CFLAGS := $(filter-out -O2,$(CFLAGS)) -O0\n' >> "${SRC_DIR}/src/nvidia/Makefile"
+            info "Enabled LOW_MEM_G_BINDATA (-O0 for generated/g_bindata.c)"
+        fi
+        ;;
     *)
-        die "Unknown CMPUNLOCKER_CARD_PROFILE='${PROFILE}' (use 8gb, 10gb, or cmp90)"
+        die "Unknown CMPUNLOCKER_CARD_PROFILE='${PROFILE}' (use 8gb, 10gb, cmp90, or cmp90-rejoin15)"
         ;;
 esac
 
-if [[ "${PROFILE}" == "cmp90" ]]; then
+if [[ "${PROFILE}" == "cmp90" || "${PROFILE}" == "cmp90-rejoin15" ]]; then
     info "CMP 90 profile: compute unlock only (SS0=0x88888888 SS1=0x00000008)"
     info "Memory geometry rewrite skipped — GDDR6X not expandable"
 else

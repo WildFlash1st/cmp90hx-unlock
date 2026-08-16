@@ -2,35 +2,53 @@
 
 > Started: 2026-07-26 | GPU: CMP 90HX (GA102, PCI ID `10de:220d`) | Kernel: 6.12.95
 
-## Current State — ✅ COMPUTE UNLOCKED (2026-08-15)
+## Current State — ✅ COMPUTE UNLOCKED, PERSISTENT (2026-08-16)
 
-**Compute unlock achieved via bendy2's V67 exploit on stock NVIDIA Open `580.159.03`.**
-PLM opens (attempt 0), SS0=0x88888888 / SS1=0x00000008 written at every boot by
-`cmp90hx-persistent.service` (bootstrap module → bus resets → stock driver handoff).
+**Primary stack: rejoin15 port on stock NVIDIA Open `610.43.03`** — the V67
+exploit is inlined into the driver init path (patches from pearlfortune/
+cmpunlocker v0.1.28 stockflow, vendored in `driver/patches/cmp90-rejoin15/`).
+No systemd service, no bootstrap module: at every boot the driver swaps its
+signature memdesc after `GFW_BOOT OK`, runs the V67 chain during the RM booter
+load (PLM 0xffffff8f → 0xffffffff), writes SS0/SS1 itself, restores the stock
+signature, triggers an official FLR and retries `nv_start_device` (rc=0).
 
 ```
 check.sh: PASS DP=full FFMA=full FMLA16=full FMLA32=full IMLA0..4=full   (9/9 fields)
-dmesg   : CMP90HX: V67 attempt=0 status=0x65 PLM=0xffffffff
-          CMP90HX: compute selectors enabled PLM=0xffffffff SS0=0x88888888 SS1=0x00000008
+dmesg   : CMP90_PROD_STACK_SHIFT_PLM_V67: FEAT_PLM_before=0xffffff8f FEAT_PLM_after=0xffffffff
+          CMP90_STOCKFLOW_REJOIN12: wrote full-speed selectors ss0_after=0x88888888 ss1_after=0x00000008
+          CMP90_STOCKFLOW_REJOIN14: nv_start_device retry completed rc=0
 ```
 
 **Benchmark (gemma-4-12B-it-QAT-Q4_0, pp512):**
-| Metric | Throttled (610.43.03) | Unlocked (580.159.03) |
-|--------|----------------------|----------------------|
-| pp512  | 224.10 t/s           | **1824.15 t/s (+713%)** |
-| tg16   | —                    | 55.96 t/s |
-| PPL    | 202.67               | 53.05 (local corpus) |
+| Metric | Throttled (610.43.03) | Unlocked (rejoin15/610.43.03) |
+|--------|----------------------|------------------------------|
+| pp512  | 224.10 t/s           | **1770.67 t/s (~7.9×)** |
+| tg16   | —                    | 55.48 t/s |
 
 PCIe stays **Gen1 x16** — hardware link cap of the card (LnkCap2: 2.5GT/s only),
-not a driver issue. Clocks normal: SM 2100 MHz, mem 9501 MHz.
+re-confirmed on the rejoin15 stack (LnkSta 2.5GT/s, sysfs current=max=2.5GT/s,
+`NVreg_EnablePCIeGen3=1` changes nothing). Not a driver issue.
 
-**Stack:** stock 580.159.03 open modules built for kernel 6.12.95 (compat fixes in
-`/home/it/build/nv-580/fix-580-kernel612.sh`) + bendy2/cmp90hx service (installed
-from `/home/it/bendy2-cmp90hx`). Rollback: `/root/backup-nvidia-610.43.03-modules/`.
+**Stack:** `sudo ./install.sh --profile=cmp90-rejoin15` builds 610.43.03 +
+rejoin14/15 patches + kernel-6.12 compat fixes from source and installs to
+`/lib/modules/$(uname -r)/updates/cmpunlocker/` (userspace + GSP firmware
+`/lib/firmware/nvidia/610.43.03/gsp_ga10x.bin` must be present). Rollback:
+`sudo ./remove.sh --yes` → stock driver; the previous bendy2/580.159.03 stack
+is backed up at `/root/backup-nvidia-580.159.03-modules/` (modules + userspace +
+service unit).
 
-**History note:** the same exploit family failed on 610.x (PLM stays locked — Falcon
-rejects the payload); the 610.57.04 port (PR #2) is unnecessary. The HFMA2 Tier 3a
-software bypass (llama.cpp fork) is superseded.
+**History:** the previous stack (bendy2 V67 on stock `580.159.03`, unlock at
+every boot by `cmp90hx-persistent.service`, pp512 1824 t/s) worked identically;
+rejoin15 replaces it because the unlock is baked into the driver (no service).
+The 610.43.03 rejoin trick: inject the signature AFTER GFW boot, accept
+"PLM open = success" even when the booter returns non-OK, then rejoin the stock
+init flow (FLR + retry).
+
+**History note:** earlier 610.x attempts failed because the payload was injected
+pre-GFW (boot-time FWSEC/WPR-meta checks reject it); the rejoin trick moves the
+injection to post-GFW (after `GFW_BOOT OK`), which is why 610.43.03 works now.
+The 610.57.04 port (PR #2) is unnecessary. The HFMA2 Tier 3a software bypass
+(llama.cpp fork) is superseded.
 
 ---
 
@@ -307,3 +325,48 @@ stock value — **gen.max=2 is a STATIC driver value, NOT a PCIE_FUSE effect**
 Combined with the FUSE0test (PCIE_FUSE=0 does not unlock OPT_GEN23/LINK_CTRL2/
 VSEC) and LnkCap2=2.5GT/s: **Gen2 is definitively not achievable in software
 on this card.**
+
+**Final Gen2 verdict (2026-08-16 night) — every known software avenue is closed:**
+
+On the investigated Manli CMP 90HX **no software method was found** to move the
+PCIe PHY/training above Gen1. Changing VBIOS, host config-space mirror,
+LINK_CONFIG, PCIE_FUSE, CSB/V67 protected writes and related Gen2 registers
+does not lead to Gen2 training. Findings:
+
+1. **Config space is EMULATED and read paths disagree:** raw dword reads
+   (od/setpci/lspci -xxx, kernel) see `LnkCap=0x11010140`, `LnkSta=0`,
+   `LnkCap2=0`, `LnkCtl2=0x00070813` (Target Link Speed=3=8GT/s!); `lspci -vvv`
+   (pciutils prints LnkCap2 only when non-zero) sees LnkCap2=0x1, LnkSta
+   2.5GT/s x16, TLS=0. Kernel `max_link_speed` uses the raw values. Mechanism
+   unresolved; the lspci path synthesizes "beautiful" values.
+2. **nvidia-smi gen.max=2 comes from RM** (NV2080_CTRL_BUS_INFO
+   PCIE_LINK_CAP_GEN), NOT from config space.
+3. **XVE 0x88000 is a byte-exact mirror of the PCIe config-space capability
+   block** (0x78..0xFF): 0x8807c=DevCap=0x112c8de1, 0x88088=LnkCap,
+   0x8809c=LnkCtl2=0x00070813, 0x880a0=LnkSta2=0x400. **The mirror is
+   host-writable**: 0x88088 (LnkCap) via GPU_REG_WR32 changed the raw config
+   LnkCap to 0x11010143 (Gen3). LnkCap2 mirror (0x88098) is badf (unreadable).
+   Documented separately: `docs/XVE_CONFIG_MIRROR.md`.
+4. **Advertising Gen3 does NOT move the link** (stays Gen1 after FLR retrain):
+   PHY training follows internal registers, not the config-space advertisement.
+5. **OPT_GEN23 (0x82057c) = 1 (Gen2/3 disable) is hardware-protected — ALL
+   write paths rejected:** GPU_REG_WR32 (RM honors PLM), rm_reg ioctl (RM),
+   and **the SEC2 CSB chain itself** (GEN23_CSB test: fresh-boot first V67
+   writing 0 to 0x82057c; status=0x65 but OPT_GEN23 readback stays 1).
+6. **kflcnReset + repeated V67 does NOT re-run the chain** (chain executes
+   once per cold boot; st=0x65 only means "booter launched").
+7. **rm_reg (NV2080_CTRL_GPU_REG_OPS ioctl, `research/rm_reg.c`) gives live
+   BAR0 read/write** via the loaded driver (reads always work; writes honor
+   PLM). Compiled at `research/rm_reg`.
+8. Reusable assets: capstone installed; `d3dx9/cmpunlocker` and
+   `bendy2/cmp90hx` cloned to `/root/` (GA100 emulator + ROP tools); GA102
+   booter image is AES-encrypted (unknown key; IMEM/DMEM host reads return
+   badf). Clean bootstrap source backup: `/root/cmp90hx-kernel_gsp.c.clean.bak`.
+9. One reboot trashed `nvidia.ko.bootstrap` to 0 bytes (cause unknown, one-off;
+   backups now kept in /root).
+
+**Verdict (experimental): no software method was found on this card to move the
+PCIe PHY/training above Gen1.** OPT_GEN23 is protected from every tested write
+path (RM, rm_reg, SEC2 CSB); the PHY advertises and trains 2.5GT/s regardless
+of config-space overrides. A new hardware-independent finding would be needed
+to revisit this.

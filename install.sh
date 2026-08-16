@@ -14,13 +14,19 @@ for arg in "$@"; do
         --profile=8gb|--profile=8GB) PROFILE_OVERRIDE="8gb" ;;
         --profile=10gb|--profile=10GB) PROFILE_OVERRIDE="10gb" ;;
         --profile=cmp90) PROFILE_OVERRIDE="cmp90" ;;
+        --profile=cmp90-rejoin15|--profile=rejoin15) PROFILE_OVERRIDE="cmp90-rejoin15" ;;
         -h|--help)
             cat <<'EOF'
-Usage: sudo ./install.sh [--profile=8gb|10gb|cmp90]
+Usage: sudo ./install.sh [--profile=8gb|10gb|cmp90|cmp90-rejoin15]
 
   --profile=8gb    Force 8GB physical card → 64GB unlock geometry (CMP 170HX)
   --profile=10gb   Force 10GB physical card → 40GB unlock geometry (CMP 170HX)
   --profile=cmp90  Force CMP 90 (GA102) — compute unlock only
+  --profile=cmp90-rejoin15
+                   CMP 90 (GA102) — PERSISTENT compute unlock via rejoin15
+                   (610.43.03): V67 inlined into driver init, no systemd
+                   service, no bootstrap module. Survives reboots by itself.
+                   Requires nvidia-open 610.43.03 userspace + GSP firmware.
 
 Without --profile, stock nvidia-smi memory.total selects the profile:
   ~8192 MiB  → 8gb / 64GB unlock
@@ -145,6 +151,10 @@ case "${CARD_PROFILE}" in
         EXPECTED_MIB=10240
         info "CMP 90 compute unlock: SS0=0x88888888 SS1=0x00000008 + PCIe gen3 (memory stays 10GB GDDR6X)"
         ;;
+    cmp90-rejoin15)
+        EXPECTED_MIB=10240
+        info "CMP 90 rejoin15 persistent unlock: V67 inlined into 610.43.03 driver init (no service, survives reboots)"
+        ;;
     *)
         die "Internal error: bad profile ${CARD_PROFILE}"
         ;;
@@ -195,6 +205,17 @@ fi
 version_supported "${detected}" || die "Installed driver is ${detected}, but cmpunlocker requires one of: ${SUPPORTED_VERSIONS_CSV}."
 ok "NVIDIA driver ${detected} is supported"
 
+if [[ "${CARD_PROFILE}" == "cmp90-rejoin15" ]]; then
+    [[ "${detected}" == "610.43.03" ]] || die "rejoin15 requires nvidia-open 610.43.03 (detected: ${detected}). Install it first (userspace + GSP firmware)."
+    GSP_FW="/lib/firmware/nvidia/610.43.03/gsp_ga10x.bin"
+    [[ -f "${GSP_FW}" ]] || die "GSP firmware missing: ${GSP_FW}. Extract it: NVIDIA-Linux-x86_64-610.43.03.run --extract-only → firmware/nvidia/610.43.03/, or restore from a .610bak/.orig backup."
+    ok "GSP firmware present: ${GSP_FW}"
+    if systemctl is-enabled --quiet cmp90hx-persistent.service 2>/dev/null; then
+        warn "cmp90hx-persistent.service (bendy2 bootstrap) is ENABLED — disabling it (rejoin15 unlocks during driver init; the two stacks conflict)"
+        systemctl disable cmp90hx-persistent.service 2>/dev/null || true
+    fi
+fi
+
 [[ -d "/lib/modules/$(uname -r)/build" ]] || die "Kernel headers missing for $(uname -r). Install linux-headers-$(uname -r) or kernel-devel."
 ok "Kernel headers present for $(uname -r)"
 
@@ -214,6 +235,14 @@ if [[ "${CARD_PROFILE}" == "cmp90" ]]; then
     echo "  CMP 90: memory stays at ${EXPECTED_MIB} MiB (GDDR6X), compute SM unlocked, PCIe gen3"
     echo "  Verify SM clocks: nvidia-smi --query-gpu=clocks.max.sm --format=csv,noheader"
     echo "  Verify PCIe: nvidia-smi --query-gpu=pcie.link.gen.current --format=csv,noheader"
+fi
+if [[ "${CARD_PROFILE}" == "cmp90-rejoin15" ]]; then
+    echo "  CMP 90 rejoin15: persistent unlock — V67 runs during driver init, no service"
+    echo "  Verify after reboot: sudo dmesg | grep -E 'CMP90_PROD_STACK_SHIFT_PLM_V67|REJOIN12'"
+    echo "    expect: FEAT_PLM_before=0xffffff8f FEAT_PLM_after=0xffffffff,"
+    echo "            ss0_after=0x88888888 ss1_after=0x00000008, nv_start_device retry rc=0"
+    echo "  Full-speed check: bash <(curl -sL https://raw.githubusercontent.com/bendy2/cmp90hx/main/check.sh) 2>/dev/null || true"
+    echo "  Note: PCIe stays Gen1 x16 on this card (PHY is fused); rejoin15 does not change that."
 fi
 echo "Next:"
 echo -e "  1. Cold reboot recommended: ${CYAN}sudo shutdown -h now${NC}  (then power on)"

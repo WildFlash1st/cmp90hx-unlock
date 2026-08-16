@@ -47,3 +47,4 @@ output/*.ko
 # Firmware binaries (large, not needed in repo)
 /firmware/
 /bendy2/
+.qwen/

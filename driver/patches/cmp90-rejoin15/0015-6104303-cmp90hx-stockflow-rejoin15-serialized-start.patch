@@ -1,0 +1,42 @@
+--- a/kernel-open/nvidia/nv.c
++++ b/kernel-open/nvidia/nv.c
+@@ -66,2 +66,4 @@
+ #include <linux/firmware.h>
++static DEFINE_MUTEX(cmp90_rejoin15_start_lock);
++
+ #include <linux/cdev.h>
+@@ -1693,5 +1695,18 @@
+         }
+ 
++        if ((nv->pci_info.device_id == 0x220d) &&
++            (nv->subsystem_vendor == 0x10de) &&
++            (nv->subsystem_id == 0x1555))
++        {
++            NV_DEV_PRINTF(NV_DBG_ERRORS, nv,
++                          "CMP90_STOCKFLOW_REJOIN15: waiting for serialized "
++                          "nv_start_device\n");
++            mutex_lock(&cmp90_rejoin15_start_lock);
++            NV_DEV_PRINTF(NV_DBG_ERRORS, nv,
++                          "CMP90_STOCKFLOW_REJOIN15: entered serialized "
++                          "nv_start_device\n");
++        }
++
+         rc = nv_start_device(nv, sp);
+         if ((rc != 0) &&
+             (nv->pci_info.device_id == 0x220d) &&
+@@ -1711,5 +1725,15 @@
+                           rc, nv->flags);
+         }
++        if ((nv->pci_info.device_id == 0x220d) &&
++            (nv->subsystem_vendor == 0x10de) &&
++            (nv->subsystem_id == 0x1555))
++        {
++            NV_DEV_PRINTF(NV_DBG_ERRORS, nv,
++                          "CMP90_STOCKFLOW_REJOIN15: leaving serialized "
++                          "nv_start_device rc=%d flags=0x%x\n",
++                          rc, nv->flags);
++            mutex_unlock(&cmp90_rejoin15_start_lock);
++        }
+         if (rc != 0)
+             return rc;
+     }
