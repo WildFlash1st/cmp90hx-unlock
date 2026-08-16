@@ -164,6 +164,62 @@ initialization is controlled by signed GSP firmware reading an eFuse bit.
 - `drivers/gpu/drm/nouveau/nvkm/subdev/gsp/` — GSP interface
 - `drivers/gpu/drm/nouveau/nvkm/subdev/fuse/gm107.c` — Fuse reading
 
+## GSP Firmware Analysis Results (2026-08-16)
+
+### Critical Discovery: Device ID Table Exclusion
+
+**FEAT_READOUT_0 (0x823814) is NOT read by GSP firmware directly!**
+
+Exhaustive search of 84MB RISC-V GSP firmware found:
+- NO LUI 0x823 instructions
+- NO direct 0x823814 literal
+- NO AUIPC patterns reaching 0x823814
+
+Instead, graphics disable happens via **Device ID table exclusion**:
+
+```
+Firmware offset 0xe037b0 - Supported Device IDs:
+  0x2203, 0x2204, 0x2205, 0x2206, 0x2207, 0x2208, 0x2209, 0x220A, 0x220C
+  
+  NOTE: 0x220D (CMP 90HX) is ABSENT!
+```
+
+### New Model of Graphics Disable
+
+```
+Old assumption:
+  GSP reads FEAT_READOUT_0 → bit8=0 → skip PGRAPH
+
+Actual mechanism:
+  1. GSP reads device ID from hardware
+  2. Lookup in whitelist table @ 0xe037b0
+  3. 0x220D not in table → skip PGRAPH init
+  4. FEAT_READOUT_0 bit8=0 is EFFECT, not CAUSE
+```
+
+### Registry Keys Found in Firmware
+
+| Offset | Key | Potential Use |
+|--------|-----|---------------|
+| 0x1015ee8 | `RMSkipGrResetForInstSys` | Skip GR reset |
+| 0x1024e00 | `DisableGrAuto` | Auto-disable mechanism |
+| 0x1015ed0 | `RMForceGrUcodeLoad` | Force GR microcode load |
+| 0x1015fd0 | `GrCtxSwMode` | GR context switch mode |
+
+### New Attack Vectors
+
+1. **Device ID Spoofing** — make GSP see 0x2206 instead of 0x220D
+   - PCI config space device ID? (likely in eFuse)
+   - GSP reads from where? (needs more RE)
+
+2. **Registry Key Override** — set `RMForceGrUcodeLoad=1` via RM
+   - Need to find how to pass regkeys to GSP-RM
+
+3. **Table Patching** — add 0x220D to table @ 0xe037b0
+   - Blocked by PKC signature verification
+
+---
+
 ## Why There's Still Hope
 
 **Key fact from bendy2**: "不是 fuse/硬件阉割，是固件层面的 init 跳过"
