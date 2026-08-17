@@ -48,3 +48,5 @@ output/*.ko
 /firmware/
 /bendy2/
 .qwen/
+# Large binaries from pearlfortune release
+analysis/pearlfortune/*/cmpunlocker-rs

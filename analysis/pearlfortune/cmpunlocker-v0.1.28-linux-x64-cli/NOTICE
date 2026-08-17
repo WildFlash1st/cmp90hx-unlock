@@ -1,0 +1,47 @@
+cmpunlocker
+===========
+
+This product includes software developed by pearlfortune, licensed under the
+MIT License. See LICENSE.
+
+
+Third-party components
+----------------------
+
+1. NVIDIA open-gpu-kernel-modules
+
+   The distributed binary embeds prebuilt NVIDIA kernel modules, and this
+   repository contains patches against NVIDIA's open GPU kernel module source:
+
+     src/embedded/50hx-v534/*.ko
+     src/embedded/90hx-v67/*.ko
+     experiments/*/patches/*.patch
+
+   These are derived from NVIDIA/open-gpu-kernel-modules
+   <https://github.com/NVIDIA/open-gpu-kernel-modules>, which is released under
+   a dual MIT OR GPL-2.0 license. The MIT option is selected here.
+
+   Upstream commits used:
+     580.159.03  4dbb564094c7a73fe222b9b010d7782638643c65
+     610.43.03   452cec62d827034798072827d3866d1881662b77
+
+   The corresponding upstream copyright notice and MIT permission notice apply
+   to those components and are retained. NVIDIA is not affiliated with this
+   project and does not endorse it.
+
+2. WebForks/cmpunlocker
+
+   <https://github.com/WebForks/cmpunlocker>, pinned commit
+   970385136f87597fafeeaee3527816cc5f4a8701.
+
+   No source code from that project is used or derived from here. Only factual
+   identification data - stock firmware file sizes, SHA-256 digests and PCI
+   device IDs - was independently recorded in src/compat.rs for the purpose of
+   recognizing unmodified vendor firmware.
+
+
+Trademarks
+----------
+
+NVIDIA, CMP, and related product names are trademarks of NVIDIA Corporation.
+They are used here only to identify the hardware this software operates on.
