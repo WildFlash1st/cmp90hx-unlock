@@ -1,0 +1,800 @@
+diff -ruN clean/NVIDIA-kernel-module-source-610.43.03/src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_falcon_ga102.c final/src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_falcon_ga102.c
+--- a/src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_falcon_ga102.c	2026-07-01 07:34:38.000000000 +0800
++++ b/src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_falcon_ga102.c	2026-07-31 10:49:45.706178340 +0800
+@@ -37,10 +37,61 @@
+ #include "published/ampere/ga102/dev_fbif_v4.h"
+ #include "published/ampere/ga102/dev_gc6_island.h"
+ #include "published/ampere/ga102/dev_gc6_island_addendum.h"
++#include "published/turing/tu102/dev_fb.h"
+ #include "gpu/sec2/kernel_sec2.h"
+ 
+ static GpuWaitConditionFunc s_dmaPollCondFunc;
+ 
++#define CMP90_REJOIN9_PCI_DEVICE_ID             0x220DU
++#define CMP90_REJOIN9_PCI_DEVICE_ID_FULL        0x220D10DEU
++#define CMP90_REJOIN9_PCI_SUBDEVICE_ID          0x155510DEU
++#define CMP90_REJOIN9_FEAT_OVR_PLM              0x00823804U
++#define CMP90_REJOIN9_PLM_OPEN                  0xffffffffU
++#define CMP90_REJOIN9_SIGNATURE_SIZE            0x0000FA00ULL
++#define CMP90_REJOIN9_EARLY_PLM_TIMEOUT_US      5000000U
++
++static NvBool
++_kgspCmp90Rejoin9IsExactTarget
++(
++    OBJGPU *pGpu
++)
++{
++    NvU32 pciDeviceId = pGpu->idInfo.PCIDeviceID;
++
++    return (((pciDeviceId == CMP90_REJOIN9_PCI_DEVICE_ID_FULL) ||
++             ((pciDeviceId >> 16) == CMP90_REJOIN9_PCI_DEVICE_ID) ||
++             (pciDeviceId == CMP90_REJOIN9_PCI_DEVICE_ID)) &&
++            (pGpu->idInfo.PCISubDeviceID ==
++             CMP90_REJOIN9_PCI_SUBDEVICE_ID));
++}
++
++static NvBool
++_kgspCmp90Rejoin9ShouldEarlyHandoff
++(
++    OBJGPU *pGpu,
++    KernelGsp *pKernelGsp,
++    KernelGspFlcnUcode *pFlcnUcode
++)
++{
++    if (!_kgspCmp90Rejoin9IsExactTarget(pGpu))
++    {
++        return NV_FALSE;
++    }
++
++    if (pFlcnUcode != pKernelGsp->pBooterLoadUcode)
++    {
++        return NV_FALSE;
++    }
++
++    if (pKernelGsp->pSignatureMemdesc == NULL)
++    {
++        return NV_FALSE;
++    }
++
++    return (memdescGetSize(pKernelGsp->pSignatureMemdesc) ==
++            CMP90_REJOIN9_SIGNATURE_SIZE);
++}
++
+ typedef struct {
+     KernelFalcon *pKernelFlcn;
+     NvU32 pollMask;
+@@ -286,6 +337,71 @@
+     // Start CPU now.
+     kflcnStartCpu_HAL(pGpu, pKernelFlcn);
+ 
++    if (_kgspCmp90Rejoin9ShouldEarlyHandoff(pGpu, pKernelGsp, pFlcnUcode))
++    {
++        RMTIMEOUT timeout;
++        NvU32 pollCount = 0;
++        NvU32 featPlm = 0xffffffffU;
++        NvU32 wpr2LoRaw = 0xffffffffU;
++        NvU32 wpr2HiRaw = 0xffffffffU;
++        NvU32 falconCpuCtl = 0xffffffffU;
++        NvU32 irqStat = 0xffffffffU;
++        NvU32 mailbox0 = 0xffffffffU;
++        NvU32 mailbox1 = 0xffffffffU;
++        NV_STATUS pollStatus;
++
++        gpuSetTimeout(pGpu, CMP90_REJOIN9_EARLY_PLM_TIMEOUT_US,
++                      &timeout, 0);
++        for (;;)
++        {
++            featPlm = GPU_REG_RD32(pGpu, CMP90_REJOIN9_FEAT_OVR_PLM);
++            wpr2LoRaw = GPU_REG_RD32(pGpu, NV_PFB_PRI_MMU_WPR2_ADDR_LO);
++            wpr2HiRaw = GPU_REG_RD32(pGpu, NV_PFB_PRI_MMU_WPR2_ADDR_HI);
++            if (featPlm == CMP90_REJOIN9_PLM_OPEN)
++            {
++                falconCpuCtl = kflcnRegRead_HAL(
++                    pGpu, pKernelFlcn, NV_PFALCON_FALCON_CPUCTL);
++                irqStat = kflcnRegRead_HAL(
++                    pGpu, pKernelFlcn, NV_PFALCON_FALCON_IRQSTAT);
++                mailbox0 = kflcnRegRead_HAL(
++                    pGpu, pKernelFlcn, NV_PFALCON_FALCON_MAILBOX0);
++                mailbox1 = kflcnRegRead_HAL(
++                    pGpu, pKernelFlcn, NV_PFALCON_FALCON_MAILBOX1);
++                if (pMailbox0 != NULL)
++                    *pMailbox0 = mailbox0;
++                if (pMailbox1 != NULL)
++                    *pMailbox1 = mailbox1;
++                NV_PRINTF(
++                    LEVEL_ERROR,
++                    "CMP90_STOCKFLOW_REJOIN9: early PLM handoff "
++                    "poll_count=%u feat_plm=0x%08x "
++                    "wpr2_lo_raw=0x%08x wpr2_hi_raw=0x%08x "
++                    "falcon_cpu_ctl=0x%08x irq_stat=0x%08x "
++                    "mailbox0=0x%08x mailbox1=0x%08x; "
++                    "returning before Booter halt wait\n",
++                    pollCount, featPlm, wpr2LoRaw, wpr2HiRaw,
++                    falconCpuCtl, irqStat, mailbox0, mailbox1);
++                return NV_ERR_NOT_READY;
++            }
++
++            pollStatus = gpuCheckTimeout(pGpu, &timeout);
++            if (pollStatus == NV_ERR_TIMEOUT)
++            {
++                NV_PRINTF(
++                    LEVEL_ERROR,
++                    "CMP90_STOCKFLOW_REJOIN9: early PLM poll timed out "
++                    "poll_count=%u feat_plm=0x%08x "
++                    "wpr2_lo_raw=0x%08x wpr2_hi_raw=0x%08x; "
++                    "falling back to Booter halt wait\n",
++                    pollCount, featPlm, wpr2LoRaw, wpr2HiRaw);
++                break;
++            }
++            NV_CHECK_OK_OR_RETURN(LEVEL_ERROR, pollStatus);
++            pollCount++;
++            osDelay(1);
++        }
++    }
++
+     // Wait for completion.
+     status = kflcnWaitForHalt_HAL(pGpu, pKernelFlcn, GPU_TIMEOUT_DEFAULT, 0);
+ 
+diff -ruN clean/NVIDIA-kernel-module-source-610.43.03/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_booter_tu102.c final/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_booter_tu102.c
+--- a/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_booter_tu102.c	2026-07-01 07:34:39.000000000 +0800
++++ b/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_booter_tu102.c	2026-07-31 10:49:45.702178674 +0800
+@@ -28,7 +28,23 @@
+ #include "gpu/sec2/kernel_sec2.h"
+ 
+ #include "published/turing/tu102/dev_falcon_v4.h"
++#include "published/turing/tu102/dev_fb.h"
+ 
++#define CMP90_PC_EXACT_PCI_DEVICE_ID             0x220DU
++#define CMP90_PC_EXACT_PCI_SUBDEVICE_ID          0x155510DEU
++#define CMP90_PC_EXACT_FEAT_OVR_PLM              0x00823804U
++#define CMP90_PC_EXACT_PLM_OPEN                  0xffffffffU
++#define CMP90_PC_EXACT_TRACEIDX                   0x00000148U
++#define CMP90_PC_EXACT_TRACEPC                    0x0000014CU
++
++NV_STATUS kgspCmp90RestoreStockSignatureForBooter(OBJGPU *pGpu,
++                                                  KernelGsp *pKernelGsp);
++NV_STATUS kgspExecuteBooterUnloadIfNeeded_TU102(OBJGPU *pGpu,
++                                                KernelGsp *pKernelGsp,
++                                                const NvU64 sysmemAddr);
++
++static NvBool s_cmp90PcExactTimingAttempted = NV_FALSE;
++static NvBool s_cmp90PcStockRetryArmed = NV_FALSE;
+ 
+ static NV_STATUS
+ s_executeBooterUcode_TU102
+@@ -38,7 +54,13 @@
+     KernelGspFlcnUcode *pBooterUcode,
+     KernelFalcon *pKernelFlcn,
+     const NvU32 mailbox0Arg,
+-    const NvU32 mailbox1Arg
++    const NvU32 mailbox1Arg,
++    NvU32 *pMailbox0Result,
++    NvU32 *pCpuCtlResult,
++    NvU32 *pIrqStatResult,
++    NvU32 *pDebugInfoResult,
++    NvU32 *pTraceIdxResult,
++    NvU32 *pTracePcResult
+ )
+ {
+     NV_STATUS status;
+@@ -63,6 +85,24 @@
+ 
+     NV_PRINTF(LEVEL_INFO, "after Booter mailbox0 0x%08x, mailbox1 0x%08x\n", mailbox0, mailbox1);
+ 
++    if (pMailbox0Result != NULL)
++        *pMailbox0Result = mailbox0;
++    if (pCpuCtlResult != NULL)
++        *pCpuCtlResult = kflcnRegRead_HAL(
++            pGpu, pKernelFlcn, NV_PFALCON_FALCON_CPUCTL);
++    if (pIrqStatResult != NULL)
++        *pIrqStatResult = kflcnRegRead_HAL(
++            pGpu, pKernelFlcn, NV_PFALCON_FALCON_IRQSTAT);
++    if (pDebugInfoResult != NULL)
++        *pDebugInfoResult = kflcnRegRead_HAL(
++            pGpu, pKernelFlcn, NV_PFALCON_FALCON_DEBUGINFO);
++    if (pTraceIdxResult != NULL)
++        *pTraceIdxResult = kflcnRegRead_HAL(
++            pGpu, pKernelFlcn, CMP90_PC_EXACT_TRACEIDX);
++    if (pTracePcResult != NULL)
++        *pTracePcResult = kflcnRegRead_HAL(
++            pGpu, pKernelFlcn, CMP90_PC_EXACT_TRACEPC);
++
+     if (status != NV_OK)
+     {
+         NV_PRINTF(LEVEL_ERROR, "failed to execute Booter: status 0x%x, mailbox 0x%x\n", status, mailbox0);
+@@ -88,11 +128,47 @@
+ {
+     NV_STATUS status;
+     NvU32 mailbox0 = 0, mailbox1 = 0;
++    NvU32 mailbox0Result = 0xffffffffU;
++    NvU32 cpuCtl = 0xffffffffU;
++    NvU32 irqStat = 0xffffffffU;
++    NvU32 debugInfo = 0xffffffffU;
++    NvU32 traceIdx = 0xffffffffU;
++    NvU32 tracePc = 0xffffffffU;
++    NvU32 featPlmBefore = 0xffffffffU;
++    NvU32 featPlmAfter = 0xffffffffU;
++    NvBool bCmp90PcStockRetry = NV_FALSE;
++    NvBool bCmp90PcCanary =
++        (((pGpu->idInfo.PCIDeviceID >> 16) ==
++            CMP90_PC_EXACT_PCI_DEVICE_ID) &&
++         (pGpu->idInfo.PCISubDeviceID ==
++            CMP90_PC_EXACT_PCI_SUBDEVICE_ID));
+ 
+     KernelSec2 *pKernelSec2 = GPU_GET_KERNEL_SEC2(pGpu);
+ 
+     NV_ASSERT_OR_RETURN(pKernelGsp->pBooterLoadUcode != NULL, NV_ERR_INVALID_STATE);
+ 
++    if (bCmp90PcCanary && s_cmp90PcExactTimingAttempted)
++    {
++        if (s_cmp90PcStockRetryArmed)
++        {
++            bCmp90PcStockRetry = NV_TRUE;
++            s_cmp90PcStockRetryArmed = NV_FALSE;
++            NV_PRINTF(
++                LEVEL_ERROR,
++                "CMP90_STOCKFLOW_REJOIN9: allowing one stock Booter "
++                "retry after early PLM handoff\n");
++        }
++        else
++        {
++            NV_PRINTF(
++                LEVEL_ERROR,
++                "CMP90_PROD_STACK_SHIFT_PLM_V67: "
++                "module-lifetime gate blocked "
++                "an additional Booter Load request\n");
++            return NV_ERR_INVALID_STATE;
++        }
++    }
++
+     if (sysmemAddrOfData != 0)
+     {
+         //
+@@ -106,12 +182,123 @@
+     NV_PRINTF(LEVEL_INFO, "executing Booter Load, sysmemAddrOfData 0x%llx\n",
+               sysmemAddrOfData);
+ 
++    if (bCmp90PcCanary)
++    {
++        s_cmp90PcExactTimingAttempted = NV_TRUE;
++        featPlmBefore = GPU_REG_RD32(
++            pGpu, CMP90_PC_EXACT_FEAT_OVR_PLM);
++    }
++
+     NV_ASSERT_OK_OR_RETURN(kflcnReset_HAL(pGpu, staticCast(pKernelSec2, KernelFalcon)));
+ 
+     status = s_executeBooterUcode_TU102(pGpu, pKernelGsp,
+                                         pKernelGsp->pBooterLoadUcode,
+                                         staticCast(pKernelSec2, KernelFalcon),
+-                                        mailbox0, mailbox1);
++                                        mailbox0, mailbox1,
++                                        bCmp90PcCanary ?
++                                            &mailbox0Result : NULL,
++                                        bCmp90PcCanary ? &cpuCtl : NULL,
++                                        bCmp90PcCanary ? &irqStat : NULL,
++                                        bCmp90PcCanary ? &debugInfo : NULL,
++                                        bCmp90PcCanary ? &traceIdx : NULL,
++                                        bCmp90PcCanary ? &tracePc : NULL);
++    if (bCmp90PcCanary)
++    {
++        featPlmAfter = GPU_REG_RD32(
++            pGpu, CMP90_PC_EXACT_FEAT_OVR_PLM);
++        NV_PRINTF(
++            LEVEL_ERROR,
++            "CMP90_PROD_STACK_SHIFT_PLM_V67: native GA102 "
++            "status=0x%x mailbox0=0x%08x "
++            "FEAT_PLM_before=0x%08x FEAT_PLM_after=0x%08x "
++            "cpu_ctl=0x%08x irq_stat=0x%08x "
++            "debug_info=0x%08x trace_idx=0x%08x trace_pc=0x%08x "
++            "memdesc=%llu wpr_meta=%llu; "
++            "CMP90_STOCKFLOW_REJOIN9 continuing into stock "
++            "GSP-RM continuation\n",
++            status, mailbox0Result, featPlmBefore, featPlmAfter,
++            cpuCtl, irqStat, debugInfo, traceIdx, tracePc,
++            (unsigned long long)memdescGetSize(
++                pKernelGsp->pSignatureMemdesc),
++            (unsigned long long)((pKernelGsp->pWprMeta != NULL) ?
++                pKernelGsp->pWprMeta->sizeOfSignature : 0));
++        if ((status != NV_OK) &&
++            (featPlmAfter == CMP90_PC_EXACT_PLM_OPEN) &&
++            !bCmp90PcStockRetry)
++        {
++            NV_STATUS restoreStatus =
++                kgspCmp90RestoreStockSignatureForBooter(pGpu, pKernelGsp);
++            NvU32 wpr2LoBefore;
++            NvU32 wpr2HiBefore;
++            NvU32 wpr2LoAfter;
++            NvU32 wpr2HiAfter;
++            if (restoreStatus != NV_OK)
++            {
++                NV_PRINTF(
++                    LEVEL_ERROR,
++                    "CMP90_STOCKFLOW_REJOIN9: failed to restore stock "
++                    "signature before stock continuation status=0x%x\n",
++                    restoreStatus);
++                return restoreStatus;
++            }
++
++            NV_PRINTF(
++                LEVEL_ERROR,
++                "CMP90_STOCKFLOW_REJOIN9: restored stock signature; "
++                "observing WPR2 before stock retry\n");
++            wpr2LoBefore = GPU_REG_RD32(
++                pGpu, NV_PFB_PRI_MMU_WPR2_ADDR_LO);
++            wpr2HiBefore = GPU_REG_RD32(
++                pGpu, NV_PFB_PRI_MMU_WPR2_ADDR_HI);
++            wpr2LoAfter = GPU_REG_RD32(
++                pGpu, NV_PFB_PRI_MMU_WPR2_ADDR_LO);
++            wpr2HiAfter = GPU_REG_RD32(
++                pGpu, NV_PFB_PRI_MMU_WPR2_ADDR_HI);
++            featPlmAfter = GPU_REG_RD32(
++                pGpu, CMP90_PC_EXACT_FEAT_OVR_PLM);
++            NV_PRINTF(
++                LEVEL_ERROR,
++                "CMP90_STOCKFLOW_REJOIN9: WPR2 state after early PLM "
++                "handoff lo_before=0x%08x hi_before=0x%08x "
++                "lo_after=0x%08x hi_after=0x%08x "
++                "wpr2_up=%u feat_plm=0x%08x\n",
++                wpr2LoBefore, wpr2HiBefore,
++                wpr2LoAfter, wpr2HiAfter,
++                kgspIsWpr2Up_HAL(pGpu, pKernelGsp),
++                featPlmAfter);
++            NV_PRINTF(
++                LEVEL_ERROR,
++                "CMP90_STOCKFLOW_REJOIN9: retrying stock Booter Load "
++                "after early PLM handoff\n");
++
++            NV_ASSERT_OK_OR_RETURN(kflcnReset_HAL(
++                pGpu, staticCast(pKernelSec2, KernelFalcon)));
++            status = s_executeBooterUcode_TU102(pGpu, pKernelGsp,
++                                                pKernelGsp->pBooterLoadUcode,
++                                                staticCast(pKernelSec2,
++                                                    KernelFalcon),
++                                                mailbox0, mailbox1,
++                                                &mailbox0Result, &cpuCtl,
++                                                &irqStat, &debugInfo,
++                                                &traceIdx, &tracePc);
++            featPlmAfter = GPU_REG_RD32(
++                pGpu, CMP90_PC_EXACT_FEAT_OVR_PLM);
++            NV_PRINTF(
++                LEVEL_ERROR,
++                "CMP90_STOCKFLOW_REJOIN9: stock Booter Load after early PLM "
++                "handoff status=0x%x mailbox0=0x%08x "
++                "FEAT_PLM_after=0x%08x cpu_ctl=0x%08x "
++                "irq_stat=0x%08x debug_info=0x%08x "
++                "trace_idx=0x%08x trace_pc=0x%08x "
++                "memdesc=%llu wpr_meta=%llu\n",
++                status, mailbox0Result, featPlmAfter, cpuCtl, irqStat,
++                debugInfo, traceIdx, tracePc,
++                (unsigned long long)memdescGetSize(
++                    pKernelGsp->pSignatureMemdesc),
++                (unsigned long long)((pKernelGsp->pWprMeta != NULL) ?
++                    pKernelGsp->pWprMeta->sizeOfSignature : 0));
++        }
++    }
+     if (status != NV_OK)
+     {
+         NV_PRINTF(LEVEL_ERROR, "failed to execute Booter Load: 0x%x\n", status);
+@@ -162,7 +349,8 @@
+     status = s_executeBooterUcode_TU102(pGpu, pKernelGsp,
+                                         pKernelGsp->pBooterUnloadUcode,
+                                         staticCast(pKernelSec2, KernelFalcon),
+-                                        mailbox0, mailbox1);
++                                        mailbox0, mailbox1, NULL,
++                                        NULL, NULL, NULL, NULL, NULL);
+     if (status != NV_OK)
+     {
+         NV_PRINTF(LEVEL_ERROR, "failed to execute Booter Unload: 0x%x\n", status);
+diff -ruN clean/NVIDIA-kernel-module-source-610.43.03/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_frts_tu102.c final/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_frts_tu102.c
+--- a/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_frts_tu102.c	2026-07-01 07:34:40.000000000 +0800
++++ b/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_frts_tu102.c	2026-07-31 10:49:45.686180009 +0800
+@@ -39,6 +39,26 @@
+ #include "published/turing/tu102/dev_gc6_island.h"
+ #include "published/turing/tu102/dev_gc6_island_addendum.h"
+ 
++#define CMP90_FRTS_DIAG_PCI_DEVICE_ID           0x220DU
++#define CMP90_FRTS_DIAG_PCI_DEVICE_ID_FULL      0x220D10DEU
++#define CMP90_FRTS_DIAG_PCI_SUBDEVICE_ID        0x155510DEU
++#define CMP90_FRTS_DIAG_FEAT_OVR_PLM            0x00823804U
++
++static NvBool
++_kgspCmp90FrtsDiagIsExactTarget
++(
++    OBJGPU *pGpu
++)
++{
++    NvU32 pciDeviceId = pGpu->idInfo.PCIDeviceID;
++
++    return (((pciDeviceId == CMP90_FRTS_DIAG_PCI_DEVICE_ID_FULL) ||
++             ((pciDeviceId >> 16) == CMP90_FRTS_DIAG_PCI_DEVICE_ID) ||
++             (pciDeviceId == CMP90_FRTS_DIAG_PCI_DEVICE_ID)) &&
++            (pGpu->idInfo.PCISubDeviceID ==
++             CMP90_FRTS_DIAG_PCI_SUBDEVICE_ID));
++}
++
+ /*!
+  * Get size of FRTS data.
+  *
+@@ -493,9 +513,40 @@
+         NvU32 wpr2HiVal;
+         NvU32 wpr2LoVal;
+         NvU32 expectedLoVal;
++        NvBool bCmp90ExactTarget = _kgspCmp90FrtsDiagIsExactTarget(pGpu);
++        NvU32 wpr2HiRaw = 0xffffffffU;
++        NvU32 wpr2LoRaw = 0xffffffffU;
++        NvU32 expectedLoValDiag = 0xffffffffU;
++        NvU32 featPlm = 0xffffffffU;
+ 
+         data = GPU_REG_RD32(pGpu, NV_PBUS_VBIOS_SCRATCH(NV_VBIOS_FWSECLIC_SCRATCH_INDEX_0E));
+         frtsErrCode = DRF_VAL(_VBIOS, _FWSECLIC, _FRTS_ERR_CODE, data);
++        if (bCmp90ExactTarget)
++        {
++            expectedLoValDiag = (NvU32)
++                (pPreparedCmd->frtsOffset >>
++                 NV_PFB_PRI_MMU_WPR2_ADDR_LO_ALIGNMENT);
++            wpr2HiRaw = GPU_REG_RD32(pGpu, NV_PFB_PRI_MMU_WPR2_ADDR_HI);
++            wpr2LoRaw = GPU_REG_RD32(pGpu, NV_PFB_PRI_MMU_WPR2_ADDR_LO);
++            featPlm = GPU_REG_RD32(pGpu, CMP90_FRTS_DIAG_FEAT_OVR_PLM);
++            NV_PRINTF(
++                LEVEL_ERROR,
++                "CMP90_STOCKFLOW_REJOIN9: FRTS_DIAG "
++                "scratch0e=0x%08x frts_err=0x%x "
++                "frts_offset=0x%016llx expected_lo=0x%08x "
++                "wpr2_lo_raw=0x%08x wpr2_lo=0x%08x "
++                "wpr2_hi_raw=0x%08x wpr2_hi=0x%08x "
++                "feat_plm=0x%08x\n",
++                data, frtsErrCode,
++                (unsigned long long)pPreparedCmd->frtsOffset,
++                expectedLoValDiag, wpr2LoRaw,
++                DRF_VAL(_PFB, _PRI_MMU_WPR2_ADDR_LO, _VAL,
++                    wpr2LoRaw),
++                wpr2HiRaw,
++                DRF_VAL(_PFB, _PRI_MMU_WPR2_ADDR_HI, _VAL,
++                    wpr2HiRaw),
++                featPlm);
++        }
+         if (frtsErrCode != NV_VBIOS_FWSECLIC_FRTS_ERR_CODE_NONE)
+         {
+             NV_PRINTF(LEVEL_ERROR, "failed to execute FWSEC for FRTS: FRTS error code 0x%x\n", frtsErrCode);
+diff -ruN clean/NVIDIA-kernel-module-source-610.43.03/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c final/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
+--- a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c	2026-07-01 07:34:40.000000000 +0800
++++ b/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c	2026-07-31 10:49:45.682180342 +0800
+@@ -102,6 +102,17 @@
+ 
+ #include "crashcat/crashcat_report.h"
+ 
++#define CMP90_PC_EXACT_PCI_DEVICE_ID             0x220DU
++#define CMP90_PC_EXACT_PCI_DEVICE_ID_FULL        0x220D10DEU
++#define CMP90_PC_EXACT_PCI_SUBDEVICE_ID          0x155510DEU
++#define CMP90_PC_EXACT_FEAT_OVR_PLM              0x00823804U
++#define CMP90_PC_EXACT_PLM_OPEN                  0xffffffffU
++#define CMP90_PC_EXACT_SIGNATURE_SIZE            0x0000FA00ULL
++#define CMP90_PC_EXACT_UNIFORM_DWORD             0x0000019CU
++
++static MEMORY_DESCRIPTOR *s_cmp90PcStockSignatureMemdesc = NULL;
++static MEMORY_DESCRIPTOR *s_cmp90PcV67SignatureMemdesc = NULL;
++
+ 
+ struct MIG_CI_UPDATE_CALLBACK_PARAMS
+ {
+@@ -149,6 +160,9 @@
+ 
+ static void _kgspFreeBootBinaryImage(OBJGPU *pGpu, KernelGsp *pKernelGsp);
+ 
++static NV_STATUS _kgspCmp90ReplaceSignatureMemdescAfterGfw(OBJGPU *pGpu,
++                                                           KernelGsp *pKernelGsp);
++
+ static NV_STATUS _kgspPrepareGspRmBinaryImage(OBJGPU *pGpu, KernelGsp *pKernelGsp, GSP_FIRMWARE *pGspFw);
+ 
+ static NV_STATUS _kgspCreateSignatureMemdesc(OBJGPU *pGpu, KernelGsp *pKernelGsp,
+@@ -4453,8 +4467,42 @@
+ 
+     // WAR for Bug 5016200 - Always run scrubber from kernel RM for ADA config
+     if ((neededSize > prescrubbedSize) || kgspIsScrubberImageSupported(pGpu, pKernelGsp))
+-        NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
+-            kgspAllocateScrubberUcodeImage(pGpu, pKernelGsp, &pKernelGsp->pScrubberUcode));
++    {
++        NV_STATUS scrubberStatus = kgspAllocateScrubberUcodeImage(
++            pGpu, pKernelGsp, &pKernelGsp->pScrubberUcode);
++        if (scrubberStatus != NV_OK)
++        {
++            NvU32 pciDeviceId = pGpu->idInfo.PCIDeviceID;
++            NvBool bCmp90ExactTarget =
++                (((pciDeviceId == CMP90_PC_EXACT_PCI_DEVICE_ID_FULL) ||
++                  ((pciDeviceId >> 16) == CMP90_PC_EXACT_PCI_DEVICE_ID) ||
++                  (pciDeviceId == CMP90_PC_EXACT_PCI_DEVICE_ID)) &&
++                 (pGpu->idInfo.PCISubDeviceID ==
++                  CMP90_PC_EXACT_PCI_SUBDEVICE_ID));
++
++            if (bCmp90ExactTarget)
++            {
++                NV_PRINTF(LEVEL_ERROR,
++                          "CMP90_STOCKFLOW_REJOIN9: SCRUBBER_ALLOC_FAIL "
++                          "status=0x%x needed=0x%llx prescrubbed=0x%llx "
++                          "supported=%u\n",
++                          scrubberStatus, neededSize, prescrubbedSize,
++                          kgspIsScrubberImageSupported(pGpu, pKernelGsp));
++                if ((scrubberStatus == NV_ERR_NOT_SUPPORTED) &&
++                    !kgspIsScrubberImageSupported(pGpu, pKernelGsp))
++                {
++                    pKernelGsp->pScrubberUcode = NULL;
++                    NV_PRINTF(LEVEL_ERROR,
++                              "CMP90_STOCKFLOW_REJOIN9: "
++                              "SCRUBBER_UNSUPPORTED_SKIP "
++                              "needed=0x%llx prescrubbed=0x%llx\n",
++                              neededSize, prescrubbedSize);
++                    return NV_OK;
++                }
++            }
++            return scrubberStatus;
++        }
++    }
+ 
+     return NV_OK;
+ }
+@@ -4797,6 +4845,13 @@
+ {
+     NV_STATUS status;
+     NvBool bEccDisabled = !kmemsysCheckReadoutEccEnablement(pGpu, GPU_GET_KERNEL_MEMORY_SYSTEM(pGpu));
++    NvU32 pciDeviceId = pGpu->idInfo.PCIDeviceID;
++    NvBool bCmp90ExactTarget =
++        (((pciDeviceId == CMP90_PC_EXACT_PCI_DEVICE_ID_FULL) ||
++          ((pciDeviceId >> 16) == CMP90_PC_EXACT_PCI_DEVICE_ID) ||
++          (pciDeviceId == CMP90_PC_EXACT_PCI_DEVICE_ID)) &&
++         (pGpu->idInfo.PCISubDeviceID ==
++          CMP90_PC_EXACT_PCI_SUBDEVICE_ID));
+ 
+     NV_ASSERT_OR_RETURN(pbRetry != NULL, NV_ERR_INVALID_ARGUMENT);
+     *pbRetry = NV_FALSE;
+@@ -4805,9 +4860,23 @@
+     if (kgspIsWpr2Up_HAL(pGpu, pKernelGsp) &&
+         (!pGpu->getProperty(pGpu, PDB_PROP_GPU_PREINITIALIZED_WPR_REGION)))
+     {
+-        NV_PRINTF(LEVEL_ERROR, "unexpected WPR2 already up, cannot proceed with booting GSP\n");
+-        NV_PRINTF(LEVEL_ERROR, "(the GPU is likely in a bad state and may need to be reset)\n");
+-        return NV_ERR_INVALID_STATE;
++        NvU32 featPlm = bCmp90ExactTarget ?
++            GPU_REG_RD32(pGpu, CMP90_PC_EXACT_FEAT_OVR_PLM) : 0U;
++
++        if (bCmp90ExactTarget && (featPlm == CMP90_PC_EXACT_PLM_OPEN))
++        {
++            NV_PRINTF(
++                LEVEL_ERROR,
++                "CMP90_STOCKFLOW_REJOIN9: continuing past WPR2 already-up "
++                "gate for exact 90HX target feat_plm=0x%08x\n",
++                featPlm);
++        }
++        else
++        {
++            NV_PRINTF(LEVEL_ERROR, "unexpected WPR2 already up, cannot proceed with booting GSP\n");
++            NV_PRINTF(LEVEL_ERROR, "(the GPU is likely in a bad state and may need to be reset)\n");
++            return NV_ERR_INVALID_STATE;
++        }
+     }
+ 
+     // Populate WPR meta structure (requires knowing FB size on dGPU, which depends on GFW_BOOT)
+@@ -5030,6 +5099,8 @@
+     // Reset thread state timeout and wait for GFW_BOOT OK status
+     threadStateResetTimeout(pGpu);
+     NV_CHECK_OK_OR_GOTO(status, LEVEL_ERROR, kgspWaitForGfwBootOk_HAL(pGpu, pKernelGsp), done);
++    NV_CHECK_OK_OR_GOTO(status, LEVEL_ERROR,
++        _kgspCmp90ReplaceSignatureMemdescAfterGfw(pGpu, pKernelGsp), done);
+ 
+     //
+     // Set the GPU time to the wall-clock time after GFW boot is complete
+@@ -5662,6 +5733,215 @@
+     pKernelGsp->gspRmBootUcodeSize   = 0;
+ }
+ 
++static NvBool
++_kgspCmp90IsExactTarget
++(
++    OBJGPU *pGpu
++)
++{
++    NvU32 pciDeviceId = pGpu->idInfo.PCIDeviceID;
++
++    return (((pciDeviceId == CMP90_PC_EXACT_PCI_DEVICE_ID_FULL) ||
++             ((pciDeviceId >> 16) == CMP90_PC_EXACT_PCI_DEVICE_ID) ||
++             (pciDeviceId == CMP90_PC_EXACT_PCI_DEVICE_ID)) &&
++            (pGpu->idInfo.PCISubDeviceID ==
++             CMP90_PC_EXACT_PCI_SUBDEVICE_ID));
++}
++
++NV_STATUS
++kgspCmp90RestoreStockSignatureForBooter
++(
++    OBJGPU *pGpu,
++    KernelGsp *pKernelGsp
++)
++{
++    MEMORY_DESCRIPTOR *pV67SignatureMemdesc;
++    NvU64 stockSignatureSize;
++    NvU64 v67SignatureSize;
++
++    if (!_kgspCmp90IsExactTarget(pGpu))
++    {
++        return NV_OK;
++    }
++
++    NV_CHECK_OR_RETURN(LEVEL_ERROR,
++        s_cmp90PcStockSignatureMemdesc != NULL,
++        NV_ERR_INVALID_STATE);
++    NV_CHECK_OR_RETURN(LEVEL_ERROR,
++        pKernelGsp->pWprMeta != NULL,
++        NV_ERR_INVALID_STATE);
++
++    stockSignatureSize = memdescGetSize(s_cmp90PcStockSignatureMemdesc);
++    v67SignatureSize = (s_cmp90PcV67SignatureMemdesc != NULL) ?
++        memdescGetSize(s_cmp90PcV67SignatureMemdesc) : 0;
++
++    pKernelGsp->pSignatureMemdesc = s_cmp90PcStockSignatureMemdesc;
++    pKernelGsp->pWprMeta->sysmemAddrOfSignature = memdescGetPhysAddr(
++        pKernelGsp->pSignatureMemdesc, AT_GPU, 0);
++    pKernelGsp->pWprMeta->sizeOfSignature = stockSignatureSize;
++
++    if (pKernelGsp->pWprMetaDescriptor != NULL)
++    {
++        memdescFlushCpuCaches(pGpu, pKernelGsp->pWprMetaDescriptor);
++    }
++
++    pV67SignatureMemdesc = s_cmp90PcV67SignatureMemdesc;
++    s_cmp90PcStockSignatureMemdesc = NULL;
++    s_cmp90PcV67SignatureMemdesc = NULL;
++
++    if (pV67SignatureMemdesc != NULL)
++    {
++        memdescFree(pV67SignatureMemdesc);
++        memdescDestroy(pV67SignatureMemdesc);
++    }
++
++    NV_PRINTF(
++        LEVEL_ERROR,
++        "CMP90_STOCKFLOW_REJOIN9: restored stock signature for "
++        "second Booter Load stock=%llu v67=%llu wpr_meta=%llu\n",
++        (unsigned long long)stockSignatureSize,
++        (unsigned long long)v67SignatureSize,
++        (unsigned long long)pKernelGsp->pWprMeta->sizeOfSignature);
++
++    return NV_OK;
++}
++
++static void
++_kgspCmp90PutU32
++(
++    NvU8 *pBuffer,
++    NvU32 offset,
++    NvU32 value
++)
++{
++    pBuffer[offset + 0] = (NvU8)(value >> 0);
++    pBuffer[offset + 1] = (NvU8)(value >> 8);
++    pBuffer[offset + 2] = (NvU8)(value >> 16);
++    pBuffer[offset + 3] = (NvU8)(value >> 24);
++}
++
++static void
++_kgspCmp90FillV67Signature
++(
++    NvU8 *pSignatureVa
++)
++{
++    NvU64 i;
++
++    for (i = 0;
++         i + sizeof(NvU32) <= CMP90_PC_EXACT_SIGNATURE_SIZE;
++         i += sizeof(NvU32))
++    {
++        _kgspCmp90PutU32(
++            pSignatureVa, (NvU32)i, CMP90_PC_EXACT_UNIFORM_DWORD);
++    }
++
++    /*
++     * V67 uses the production-Booter stack map measured on CMP 90HX:
++     * active canary DMEM 0xff4c and initial return slot DMEM 0xff50.
++     */
++    _kgspCmp90PutU32(pSignatureVa, 0x1100, 0x00000007U);
++    _kgspCmp90PutU32(pSignatureVa, 0xf948, 0xffffffffU);
++    _kgspCmp90PutU32(pSignatureVa, 0xf950, 0x00000d44U);
++    _kgspCmp90PutU32(pSignatureVa, 0xf960, 0x00823804U);
++    _kgspCmp90PutU32(pSignatureVa, 0xf968, 0x00001fceU);
++    _kgspCmp90PutU32(pSignatureVa, 0xf974, 0x00000000U);
++    _kgspCmp90PutU32(pSignatureVa, 0xf97c, 0x00001101U);
++    _kgspCmp90PutU32(pSignatureVa, 0xf980, 0x000084c8U);
++    _kgspCmp90PutU32(pSignatureVa, 0xf984, 0x00008e18U);
++    _kgspCmp90PutU32(pSignatureVa, 0xf98c, 0x000084c8U);
++    _kgspCmp90PutU32(pSignatureVa, 0xf990, 0x00000000U);
++    _kgspCmp90PutU32(pSignatureVa, 0xf998, 0x00001fceU);
++    _kgspCmp90PutU32(pSignatureVa, 0xf9a4, 0x0000ffbcU);
++    _kgspCmp90PutU32(pSignatureVa, 0xf9ac, 0x00005789U);
++    _kgspCmp90PutU32(pSignatureVa, 0xf9bc, 0x00000d44U);
++    _kgspCmp90PutU32(pSignatureVa, 0xf9cc, 0x00000003U);
++    _kgspCmp90PutU32(pSignatureVa, 0xf9d4, 0x00001fceU);
++    _kgspCmp90PutU32(pSignatureVa, 0xf9e8, 0x00000d52U);
++    _kgspCmp90PutU32(pSignatureVa, 0xf9ec, 0x000081eeU);
++}
++
++static NV_STATUS
++_kgspCmp90ReplaceSignatureMemdescAfterGfw
++(
++    OBJGPU *pGpu,
++    KernelGsp *pKernelGsp
++)
++{
++    NV_STATUS status = NV_OK;
++    MEMORY_DESCRIPTOR *pOldSignatureMemdesc = NULL;
++    MEMORY_DESCRIPTOR *pNewSignatureMemdesc = NULL;
++    NvU8 *pSignatureVa = NULL;
++    NvU64 oldSignatureSize;
++    NvU64 flags = MEMDESC_FLAGS_NONE;
++
++    if (!_kgspCmp90IsExactTarget(pGpu))
++    {
++        return NV_OK;
++    }
++
++    NV_CHECK_OR_RETURN(LEVEL_ERROR,
++        pKernelGsp->pSignatureMemdesc != NULL,
++        NV_ERR_INVALID_STATE);
++
++    oldSignatureSize = memdescGetSize(pKernelGsp->pSignatureMemdesc);
++
++    if (confComputeForceUnprotAlloc(pGpu))
++    {
++        flags |= MEMDESC_FLAGS_ALLOC_IN_UNPROTECTED_MEMORY;
++    }
++
++    NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
++        memdescCreate(&pNewSignatureMemdesc, pGpu,
++            CMP90_PC_EXACT_SIGNATURE_SIZE, 256,
++            NV_TRUE, ADDR_SYSMEM, NV_MEMORY_CACHED, flags));
++
++    memdescTagAlloc(status,
++        NV_FB_ALLOC_RM_INTERNAL_OWNER_UNNAMED_TAG_16, pNewSignatureMemdesc);
++    NV_CHECK_OK_OR_GOTO(status, LEVEL_ERROR, status, fail_create);
++
++    pSignatureVa = memdescMapInternal(
++        pGpu, pNewSignatureMemdesc, TRANSFER_FLAGS_NONE);
++    NV_CHECK_OK_OR_GOTO(status, LEVEL_ERROR,
++        (pSignatureVa != NULL) ? NV_OK : NV_ERR_INSUFFICIENT_RESOURCES,
++        fail_alloc);
++
++    _kgspCmp90FillV67Signature(pSignatureVa);
++
++    memdescUnmapInternal(pGpu, pNewSignatureMemdesc, 0);
++    pSignatureVa = NULL;
++    memdescFlushCpuCaches(pGpu, pNewSignatureMemdesc);
++
++    pOldSignatureMemdesc = pKernelGsp->pSignatureMemdesc;
++    s_cmp90PcStockSignatureMemdesc = pOldSignatureMemdesc;
++    s_cmp90PcV67SignatureMemdesc = pNewSignatureMemdesc;
++    pKernelGsp->pSignatureMemdesc = pNewSignatureMemdesc;
++
++    NV_PRINTF(
++        LEVEL_ERROR,
++        "CMP90_PROD_STACK_SHIFT_PLM_V67: replaced stock signature "
++        "after GFW_BOOT with GA102 0xfa00 single-write chain for BAR0 "
++        "0x00823804=0xffffffff old=%llu total=%llu\n",
++        (unsigned long long)oldSignatureSize,
++        (unsigned long long)CMP90_PC_EXACT_SIGNATURE_SIZE);
++
++    return NV_OK;
++
++fail_alloc:
++    if (pNewSignatureMemdesc != NULL)
++    {
++        memdescFree(pNewSignatureMemdesc);
++    }
++
++fail_create:
++    if (pNewSignatureMemdesc != NULL)
++    {
++        memdescDestroy(pNewSignatureMemdesc);
++    }
++
++    return status;
++}
++
+ static NV_STATUS
+ _kgspCreateSignatureMemdesc
+ (

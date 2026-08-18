@@ -174,23 +174,27 @@ CMP 90HX ships 10 GB GDDR6X (320-bit bus, 8 Gbit modules). Proposal:
 - Open questions: 16 Gbit GDDR6X availability/board layout, thermal design, VBIOS
   training tables, memory controller support for the density (needs investigation)
 
-### 3. Graphics (PGRAPH2) remain disabled
-Compute is fully unlocked, but 3D/graphics stay gated (GSP-RM skips graphics init;
-`FEAT_READOUT_0 bit8 = 0`). Separate problem — likely requires GSP-RM firmware work.
+### 3. Graphics (PGRAPH2) — BLOCKED (2026-08-16)
 
-## Critical Missing Piece
+Compute is fully unlocked, but 3D/graphics stay gated. **Full analysis:**
+[research/GRAPHICS_UNLOCK_ANALYSIS.md](research/GRAPHICS_UNLOCK_ANALYSIS.md)
 
-**ROP gadget addresses for 610.x Falcon booter.** 
+**Root cause:** `FEAT_READOUT_0 @ 0x823814` bit8=0 (eFuse, read-only).
+Unlike SS0/SS1 (compute), there is **no FEAT_OVR override register** for graphics.
 
-The d3dx9 emulator (`tools/booter_emu.py`) works on 580.x firmware but NOT on 610.x (different ELF format). The emulator is a pure-Python RV32I interpreter with Falcon CSR semantics.
+| Register | Compute | Graphics |
+|----------|---------|----------|
+| Disable | SS0/SS1 @ 0x82381C/820 | FEAT_READOUT_0 @ 0x823814 |
+| Override | ✅ FEAT_OVR_SM_SPD | ❌ None exists |
+| Type | Writable (PLM open) | eFuse (R/O hardware) |
 
-For the exploit to work we need:
-1. Adapt the emulator to parse 610.x `.fwimage` (flat binary format)
-2. Run it to find BAR0-write gadget addresses in the 610.x booter
-3. Build a ROP chain with those addresses
-4. Place it in `dm.bin`
+GSP-RM firmware reads bit8 and skips PGRAPH init if 0 → 7177 registers return
+0xBADFxxxx (power-gated). Nouveau is not viable (requires GSP-RM for Ampere).
 
-Or: get the gadget addresses from Jon Pry (`jonpry@gmail.com`).
+**Possible paths (all high difficulty):**
+1. GSP-RM firmware RE + patch (blocked by PKC/RSA-3K)
+2. Undiscovered override register (0x823808 writable but unknown function)
+3. Manual PGRAPH init (7177+ registers from RTX dump — impractical)
 
 ## Build System
 
