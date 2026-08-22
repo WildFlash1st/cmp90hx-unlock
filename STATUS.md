@@ -374,3 +374,38 @@ PCIe PHY/training above Gen1.** OPT_GEN23 is protected from every tested write
 path (RM, rm_reg, SEC2 CSB); the PHY advertises and trains 2.5GT/s regardless
 of config-space overrides. A new hardware-independent finding would be needed
 to revisit this.
+
+---
+
+## 2026-08-22 — GEN3ADV campaign: PCIe Gen2+ front closed via XP3G PLM discovery
+
+Full write-up: `docs/GEN3ADV_XP3G_RESEARCH.md`. Highlights:
+
+1. **XVE mirror map corrected** (was shifted one dword): LnkCap=`0x88084`,
+   LnkCtl/Sta=`0x88088`, LnkCap2=`0x880a4`, LnkCtl2=`0x880a8`. The Aug-16
+   "advertise Gen3" experiment wrote Link *Control*, not Capabilities.
+2. With FEAT PLM open, host writes: LnkCap / LnkCap2 / LnkCtl2 **rejected**;
+   LnkCtl `0x88088` writable (toggle control ✓); CYA `0x8C2C0` bit2 clear
+   sticks; link policy `0x8C040`/rate `0x8C1C0` rejected (XP3G-gated).
+3. **XP3G privilege domain found on GA102 at the same address as TU102:
+   `0x8E1B0 = 0xFFFFFF8F` (locked).** Host write rejected; SEC2-falcon write
+   via the signature-swap pipeline also rejected (V5, pre-FLR readback).
+4. xrip/cmp50hx-unlock recipe (TU102) transferred end-to-end: link-policy
+   registers `0x8841C/0x88610/0x8C2C0/0x8C040/0x8C1C0`, LTSSM kick `0x8872C=6`,
+   host retrain. On GA102 everything behind XP3G PLM is unreachable — on
+   TU102 the same signature mechanism opens it. Difference = die fuses.
+5. Five instrumented builds (GEN3ADV-V1…V5): payload retargeting of the V67
+   single-write chain (value@0xf948, addr@0xf960), one-shot poison gate,
+   pre-FLR readback instrumentation, warm trigger via SS0/SS1 clearing with
+   the driver unloaded (never clear SS while GSP is live — RmInitAdapter
+   4/4 failure), batch register sweeper (`research/xve_sweep.c`, all 350
+   XVE WR-map registers in one EXEC_REG_OPS ioctl).
+6. Cold-boot GFW_BOOT hangs observed 2/2 on custom builds; warm FLR-cycle
+   reloads are reliable. Recovery: FLR + known-good module
+   (`/root/backup-nvidia-610.43.03-modules/nvidia.ko.rejoin15-working`).
+
+**Verdict (final, evidence matrix across host±PLM, SEC2-falcon, all register
+classes): no software path raises PCIe above Gen1 on this sample. The XP3G
+PLM lock and the 2.5GT/s-only vector are fuse-derived. Re-test any other 90HX
+sample by reading `0x8E1B0` first.** Machine restored: normal rejoin15 module,
+PLM open, SS0/SS1 full, compute unlock active.

@@ -10,36 +10,43 @@ BAR0 register scan (via bootstrap `GPU_REG_RD32`) of the XVE block revealed
 that **XVE base `0x00088000` is a byte-exact mirror of the PCIe config-space
 capability block** (`0x78..0xFF`). Mapping: `BAR0 0x88000 + config_offset`.
 
+> **CORRECTION (2026-08-22):** the table below previously shifted every label
+> by one dword (LnkCap was listed at 0x88088, LnkCtl2 at 0x8809c). The correct
+> PCIe-cap layout for cap @0x78 is: LnkCap=0x84, LnkCtl/LnkSta=0x88,
+> LnkCap2=0xA4, LnkCtl2/LnkSta2=0xA8. The original Aug-16 "advertise Gen3"
+> experiment therefore wrote **Link Control**, not Link Capabilities; the
+> conclusion was re-verified against the true addresses on 2026-08-22 (see
+> `docs/GEN3ADV_XP3G_RESEARCH.md`): with FEAT PLM open, 0x88084 (LnkCap),
+> 0x880a4 and 0x880a8 are hardware-RO for both host and SEC2-falcon writes;
+> only 0x88088 (LnkCtl) accepts host writes.
+
 | BAR0 | Config | Register | Value (CMP 90HX) |
 |------|--------|----------|------------------|
 | 0x88078 | 0x78 | Cap ID / next | 0x0002b410 |
 | 0x8807c | 0x7C | DevCap | 0x112c8de1 |
-| 0x88080 | 0x80 | DevCtl | 0x0000213f |
-| 0x88084 | 0x84 | DevSta | 0x00453d01 |
-| 0x88088 | 0x88 | **LnkCap** | 0x11010140 |
-| 0x8808c | 0x8C | LnkCtl | 0x00000000 |
-| 0x88090 | 0x90 | LnkSta | 0x00000000 |
-| 0x88094 | 0x94 | DevCap2 | badf (unreadable) |
-| 0x88098 | 0x98 | LnkCap2 | badf (unreadable) |
-| 0x8809c | 0x9C | LnkCtl2 | 0x00070813 |
-| 0x880a0 | 0xA0 | LnkSta2 | 0x00000400 |
-| 0x880a4 | 0xA4 | (ext) | 0x00000002 |
-| 0x880a8 | 0xA8 | (ext) | 0x00000001 |
+| 0x88080 | 0x80 | DevCtl/Sta | 0x0000213f |
+| 0x88084 | 0x84 | **LnkCap** | 0x00453d01 (Max Link Speed = 1 → 2.5GT/s, W x16) |
+| 0x88088 | 0x88 | LnkCtl/Sta | 0x11010140 (LnkSta: Speed=1, Width=x16) |
+| 0x880a4 | 0xA4 | LnkCap2 area | 0x00000002 |
+| 0x880a8 | 0xA8 | **LnkCtl2/Sta2** | TLS = 1 (target 2.5GT/s) |
 
-## Key property: host-writable
+## Key property: partially host-writable
 
 With the FEAT_OVR PLM open, `GPU_REG_WR32(0x88088, ...)` **changes the raw
-config-space LnkCap** as read by the kernel (od/setpci/sysfs):
+config-space Link Control** as read by the kernel (od/setpci/sysfs):
 
 ```text
-LNKCAP_MIRROR 0x88088 old=0x11010140 new=0x11010143 rb=0x11010143
-→ raw config 0x88 = 0x11010143 (MaxLinkSpeed = Gen3)
+LNKCTL_MIRROR 0x88088 old=0x11010140 new=0x11010141 rb=0x11010141
+(ASPM L0s bit toggled; restored afterwards)
 ```
 
 - The write goes through the normal driver path (no SEC2/CSB needed).
 - It survives across service restarts (register keeps its value until reset).
-- `LnkCap2` mirror (0x88098) and `DevCap2` (0x88094) return `badf5040` on read
-  (not implemented / protected) and ignore writes.
+- The capability registers themselves — **LnkCap (0x88084), LnkCap2 area
+  (0x880a4), LnkCtl2 (0x880a8)** — silently drop host writes even with PLM
+  open (verified 2026-08-22 via rm_reg toggle tests; NVIDIA's own
+  `dev_nv_pcfg_xve_regmap.h` WR bitmap marks them writable, but that map does
+  not reflect the live per-register RO policy seen from the host).
 
 ## Why it matters (independent of PCIe Gen2 outcome)
 
